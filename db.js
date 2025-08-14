@@ -1,43 +1,48 @@
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 
+// Reuse one connection
+let dbPromise;
+
+/**
+ * Open DB and ensure required tables exist.
+ */
 export async function getDB() {
-  const db = await open({ filename: './data.sqlite', driver: sqlite3.Database });
-  await db.exec(`CREATE TABLE IF NOT EXISTS shops (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    shop TEXT UNIQUE,
-    access_token TEXT,
-    scope TEXT,
-    installed_at TEXT
-  );`);
+  if (!dbPromise) {
+    dbPromise = open({ filename: 'data.sqlite', driver: sqlite3.Database });
+  }
+  const db = await dbPromise;
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS shops (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shop TEXT UNIQUE,
+      access_token TEXT,
+      scope TEXT,
+      installed_at TEXT
+    );
+
+    -- Optional app session store (safe to keep even if unused)
+    CREATE TABLE IF NOT EXISTS sessions (
+      shop TEXT,
+      data TEXT,
+      created_at TEXT
+    );
+  `);
+
   return db;
 }
 
-// db.js
+/**
+ * Delete saved sessions/tokens for a shop (used to self-heal on 401/403).
+ */
 export async function clearShopSessions(shop) {
   if (!shop) return;
-  const db = await getDb();                 // uses your existing getDb()
-  await db.run('DELETE FROM sessions WHERE shop = ?', shop); // table name: sessions
-}
+  const db = await getDB();
 
-// Delete any saved sessions/tokens for a shop
-export async function clearShopSessions(shop) {
-  if (!shop) return;
-  const db = await getDB(); // uses your existing getDB()
-
-  // If a 'sessions' table exists, clear rows for this shop
+  // If a sessions table is in use, clear rows for this shop
   try { await db.run('DELETE FROM sessions WHERE shop = ?', [shop]); } catch {}
 
-  // Also null the token in shops table (handles re-installs)
+  // Also null the token in shops table (covers re-installs)
   try { await db.run('UPDATE shops SET access_token = NULL WHERE shop = ?', [shop]); } catch {}
 }
-
-
-// ---- add this ----
-export async function clearShopSessions(shop) {
-  if (!shop) return;
-  const db = await getDb();                 // uses your existing getDb()
-  // adjust table name if yours is different: sessions / shopify_sessions
-  await db.run('DELETE FROM sessions WHERE shop = ?', shop);
-}
-// ---- end add ----
