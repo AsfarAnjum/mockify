@@ -1,15 +1,18 @@
 import express from 'express';
+import { withAuth } from '../utils/auth-guard.js';
 import { getDB } from '../db.js';
+import { clearShopSessions } from '../db.js';
 
 const router = express.Router();
 
 async function getAccessToken(shop) {
   const db = await getDB();
   const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
-  if (!row) throw new Error('Shop not installed or token missing');
+  if (!row || !row.access_token) throw new Error('Shop not installed or token missing');
   return row.access_token;
 }
 
+// GraphQL helper that preserves HTTP status for 401/403 handling
 async function gql(shop, token, query, variables = {}) {
   const res = await fetch(`https://${shop}/admin/api/2024-07/graphql.json`, {
     method: 'POST',
@@ -19,13 +22,25 @@ async function gql(shop, token, query, variables = {}) {
     },
     body: JSON.stringify({ query, variables }),
   });
-  const json = await res.json();
+
+  const text = await res.text();
+  let json = {};
+  try { json = text ? JSON.parse(text) : {}; } catch { /* ignore */ }
+
   if (!res.ok) {
-    const msg = json?.errors?.[0]?.message || res.statusText || 'GraphQL HTTP error';
-    throw new Error(msg);
+    const msg =
+      json?.errors?.[0]?.message ||
+      json?.error ||
+      res.statusText ||
+      'GraphQL HTTP error';
+    const err = new Error(msg);
+    err.status = res.status;           // <-- keep status (401/403)
+    throw err;
   }
   if (json?.errors?.length) {
-    throw new Error(json.errors.map(e => e.message).join('; '));
+    const err = new Error(json.errors.map(e => e.message).join('; '));
+    err.status = res.status;
+    throw err;
   }
   return json.data;
 }
@@ -42,11 +57,20 @@ function envBilling() {
   };
 }
 
-router.get('/ensure', async (req, res) => {
+// Self-healing: on 401/403, wipe stale session/token and re-OAuth
+async function handleUnauthorized(shop) {
+  try { await clearShopSessions?.(shop); } catch {}
   try {
-    const { shop } = req.query;
-    if (!shop) return res.status(400).json({ error: 'Missing shop' });
+    const db = await getDB();
+    await db.run('UPDATE shops SET access_token = NULL WHERE shop = ?', [shop]);
+  } catch {}
+}
 
+router.get('/ensure', withAuth(async (req, res, next) => {
+  const { shop } = req.query;
+  if (!shop) return res.status(400).json({ error: 'Missing shop' });
+
+  try {
     const token = await getAccessToken(shop);
 
     // 1) Check if already subscribed
@@ -84,13 +108,27 @@ router.get('/ensure', async (req, res) => {
     const resp = await gql(shop, token, m, vars);
     const err = resp?.appSubscriptionCreate?.userErrors?.[0]?.message;
     if (err) throw new Error(err);
+
     const confirmationUrl = resp?.appSubscriptionCreate?.confirmationUrl;
     return res.json({ active: false, confirmationUrl });
+
   } catch (e) {
+    const status = e?.status || e?.response?.status || e?.response?.code || e?.statusCode || e?.code;
+    const msg = (e?.message || '').toLowerCase();
+
+    // If unauthorized (stale token), clear and force fresh OAuth
+    if ((status === 401 || status === 403) ||
+        msg.includes('invalid api key') ||
+        msg.includes('access token') && msg.includes('invalid') ||
+        msg.includes('not authorized')) {
+      await handleUnauthorized(shop);
+      return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
+    }
+
     console.error('[/billing/ensure] error:', e);
-    res.status(500).json({ error: e.message || 'Billing failed' });
+    return res.status(500).json({ error: e.message || 'Billing failed' });
   }
-});
+}));
 
 router.get('/confirm', async (req, res) => {
   try {
