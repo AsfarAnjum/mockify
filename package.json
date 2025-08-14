@@ -1,0 +1,32 @@
+{
+  "name": "mockup-auto-embedder",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"nodemon server.js\" \"npm:dev:web\"",
+    "dev:web": "cd web && vite",
+    "build": "cd web && vite build",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@shopify/shopify-api": "^11.2.0",
+    "body-parser": "^1.20.2",
+    "compression": "^1.7.4",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.0",
+    "nodemon": "^3.1.10",
+    "vite": "^5.4.19"
+  }
+}
