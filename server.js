@@ -36,34 +36,31 @@ app.use(cookieParser(process.env.SESSION_SECRET));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-/* ---- helpers ---- */
-async function shopHasToken(shop) {
-  if (!shop) return false;
-  const db = await getDB();
-  const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
-  return !!row?.access_token;
-}
-
-/* ---- routes ---- */
+/* ---- mount API/webhook/auth routes first ---- */
 app.use('/webhooks/privacy', complianceRoutes);
 app.use('/auth', authRoutes);
 app.use('/api', apiRoutes);
 app.use('/billing', billingRoutes);
 
-/* Serve built frontend assets */
-app.use('/assets', express.static(path.join(__dirname, 'web', 'dist', 'assets'), { maxAge: '1y' }));
-app.use(express.static(path.join(__dirname, 'web', 'dist')));
-
-/* IMPORTANT: Top-level OAuth redirect on root */
+/* ---- Root: trigger top-level OAuth when needed ----
+   Shopify's automated install expects your app to bounce to /app/grant.
+   We do that by serving an App Bridge redirect page when there is no token. */
 app.get('/', async (req, res) => {
   const shop = (req.query?.shop || '').toString();
   let host = (req.query?.host || '').toString();
 
-  // If no host provided, derive it from shop (Shopify sometimes omits on first hit)
+  // derive host if missing
   if (!host && shop) host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
 
-  // If we don't yet have a token for this shop, force top-level redirect to /auth/install
-  if (shop && !(await shopHasToken(shop))) {
+  // check if we already have a token for this shop
+  let hasToken = false;
+  if (shop) {
+    const db = await getDB();
+    const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
+    hasToken = !!row?.access_token;
+  }
+
+  if (shop && !hasToken) {
     const apiKey = process.env.SHOPIFY_API_KEY || '';
     return res
       .status(200)
@@ -82,11 +79,19 @@ app.get('/', async (req, res) => {
 </body></html>`);
   }
 
-  // Token exists (or no shop param) → serve the SPA
+  // token exists (or no shop param) -> serve the app shell
   res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
 });
 
-/* SPA fallback for any other unknown path (after API routes above) */
+/* ---- Static assets AFTER the root handler ---- */
+app.use(
+  '/assets',
+  express.static(path.join(__dirname, 'web', 'dist', 'assets'), { maxAge: '1y' })
+);
+// disable index auto-serve so "/" hits our handler above
+app.use(express.static(path.join(__dirname, 'web', 'dist'), { index: false }));
+
+/* ---- SPA fallback ---- */
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
 });
