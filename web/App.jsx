@@ -34,6 +34,10 @@ export default function App() {
     error: null,
   });
 
+  // Use session-token fetch if present (injected by main.jsx)
+  const tokenFetch =
+    (typeof window !== 'undefined' && window.__tokenFetch) || fetch.bind(window);
+
   useEffect(() => {
     async function run() {
       if (!shop) {
@@ -42,13 +46,11 @@ export default function App() {
       }
 
       try {
-        const r = await fetch(`/billing/ensure?shop=${encodeURIComponent(shop)}`, {
-          method: 'GET',
-          credentials: 'include',
-          headers: { Accept: 'application/json' },
-        });
+        const r = await tokenFetch(
+          `/billing/ensure?shop=${encodeURIComponent(shop)}`
+        );
 
-        // stale / missing token → backend returns 401 with { error:'reauth', redirect:'...' }
+        // stale / missing server token → backend returns 401 with { error:'reauth', redirect:'...' }
         if (r.status === 401) {
           const data = await r.json().catch(() => ({}));
           if (data?.redirect) {
@@ -78,7 +80,8 @@ export default function App() {
     }
 
     run();
-  }, [shop]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shop]); // tokenFetch is stable on window, safe to omit
 
   return (
     <div style={{ maxWidth: 960, margin: '40px auto', fontFamily: 'system-ui, -apple-system' }}>
@@ -100,7 +103,7 @@ export default function App() {
 
       {shop && billing.active && !billing.loading && !billing.error && (
         <>
-          <p>Upload a mockup and attach it to a product's media or description.</p>
+          <p>Upload a mockup and attach it to a product&apos;s media or description.</p>
           <ProductPicker shop={shop} onPick={setProduct} />
           {product && <UploadAndAttach shop={shop} product={product} />}
         </>
