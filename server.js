@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -73,6 +74,22 @@ app.get('/', async (req, res) => {
   }
 
   return res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
+});
+
+// Grant route to render login.html with variables
+app.get('/app/grant', (req, res) => {
+  const shop = req.query.shop || '';
+  const host = req.query.host || '';
+  const apiKey = process.env.SHOPIFY_API_KEY || '';
+
+  const loginHtml = fs
+    .readFileSync(path.join(__dirname, 'web', 'login.html'), 'utf-8')
+    .replace('{{shop}}', shop)
+    .replace('{{host}}', host)
+    .replace('{{apiKey}}', apiKey);
+
+  res.setHeader('Content-Type', 'text/html');
+  return res.send(loginHtml);
 });
 
 // Fallback for SPA (client-side routing)
