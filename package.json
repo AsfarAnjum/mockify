@@ -7,7 +7,8 @@
     "dev": "concurrently \"nodemon server.js\" \"npm:dev:web\"",
     "dev:web": "cd web && vite",
     "build": "cd web && vite build",
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "npm ls @shopify/shopify-api"
   },
   "dependencies": {
     "@shopify/app-bridge-utils": "^3.5.1",
@@ -31,10 +32,4 @@
     "nodemon": "^3.1.10",
     "vite": "^5.4.19"
   }
-
-  
-}
-
-"scripts": {
-  "postinstall": "npm ls @shopify/shopify-api"
 }
