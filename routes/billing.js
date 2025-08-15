@@ -1,28 +1,11 @@
+// routes/billing.js
 import express from 'express';
-import { getDB, clearShopSessions } from '../db.js';
 import { shopify } from '../shopify.js';
+import { getDB, clearShopSessions } from '../db.js';
 
 const router = express.Router();
 
-// Middleware: verify Shopify session token (JWT)
-async function verifySessionToken(req, res, next) {
-  try {
-    const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (!token) return res.status(401).json({ error: 'Missing bearer token' });
-
-    const payload = await shopify.session.decodeSessionToken(token);
-    res.locals.shopify = { tokenPayload: payload };
-    return next();
-  } catch (e) {
-    console.error('[billing] token verify failed:', e?.message || e);
-    return res.status(401).json({ error: 'Invalid session token' });
-  }
-}
-
-// Apply session token verification to all billing routes
-router.use(verifySessionToken);
-
+// Helper to get token from DB
 async function getAccessToken(shop) {
   const db = await getDB();
   const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
@@ -43,10 +26,8 @@ async function gql(shop, token, query, variables = {}) {
   const text = await res.text();
   let json = {};
   try { json = text ? JSON.parse(text) : {}; } catch {}
-
   if (!res.ok) {
-    const msg = json?.errors?.[0]?.message || json?.error || res.statusText || 'GraphQL HTTP error';
-    const err = new Error(msg);
+    const err = new Error(json?.errors?.[0]?.message || res.statusText);
     err.status = res.status;
     throw err;
   }
@@ -70,32 +51,22 @@ function envBilling() {
   };
 }
 
-async function handleUnauthorized(shop) {
-  try { await clearShopSessions?.(shop); } catch {}
-  try {
-    const db = await getDB();
-    await db.run('UPDATE shops SET access_token = NULL WHERE shop = ?', [shop]);
-  } catch {}
-}
-
-router.get('/ensure', async (req, res) => {
-  // ✅ Get shop from JWT payload first, fallback to query param
-  const shop =
-    res.locals.shopify?.tokenPayload?.dest?.replace(/^https?:\/\//, '') ||
-    req.query.shop ||
-    '';
-
+// ✅ Protect with Shopify session token validation
+router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) => {
+  const shop = req.query.shop || res.locals.shopify.session.shop;
   if (!shop) return res.status(400).json({ error: 'Missing shop' });
 
   try {
     const token = await getAccessToken(shop);
 
+    // 1) Check if already subscribed
     const checkQ = `query { appInstallation { activeSubscriptions { id name status } } }`;
     const check = await gql(shop, token, checkQ);
     const list = check?.appInstallation?.activeSubscriptions || [];
-    const active = list.some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
+    const active = list.some(s => ['ACTIVE', 'ACCEPTED'].includes(s.status));
     if (active) return res.json({ active: true });
 
+    // 2) Create subscription
     const cfg = envBilling();
     const returnUrl = `${cfg.returnUrlBase}?shop=${encodeURIComponent(shop)}`;
     const m = `
@@ -124,23 +95,15 @@ router.get('/ensure', async (req, res) => {
     const err = resp?.appSubscriptionCreate?.userErrors?.[0]?.message;
     if (err) throw new Error(err);
 
-    return res.json({ active: false, confirmationUrl: resp?.appSubscriptionCreate?.confirmationUrl });
+    const confirmationUrl = resp?.appSubscriptionCreate?.confirmationUrl;
+    return res.json({ active: false, confirmationUrl });
 
   } catch (e) {
-    const status = e?.status;
-    const msg = (e?.message || '').toLowerCase();
-
-    if (
-      status === 401 ||
-      status === 403 ||
-      msg.includes('invalid api key') ||
-      (msg.includes('access token') && msg.includes('invalid')) ||
-      msg.includes('not authorized')
-    ) {
-      await handleUnauthorized(shop);
-      return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${encodeURIComponent(shop)}` });
+    const status = e?.status || 500;
+    if (status === 401 || status === 403) {
+      await clearShopSessions(shop);
+      return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${shop}` });
     }
-
     console.error('[/billing/ensure] error:', e);
     return res.status(500).json({ error: e.message || 'Billing failed' });
   }
