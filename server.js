@@ -121,3 +121,44 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`✅ Server running on http://localhost:${port}`);
 });
+
+
+// ... existing imports & setup above ...
+
+// helper to serve index.html with injected App Bridge apiKey
+function sendIndex(res) {
+  const filePath = path.join(__dirname, 'web', 'dist', 'index.html');
+  let html = fs.readFileSync(filePath, 'utf-8');
+  html = html.replace('{{apiKey}}', process.env.SHOPIFY_API_KEY || '');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.status(200).send(html);
+}
+
+// ✅ Root: derive shop from host when embedded; start OAuth if needed
+app.get('/', async (req, res) => {
+  let shop = (req.query?.shop || '').toString();
+  const host = (req.query?.host || '').toString();
+
+  if (!shop && host) {
+    try {
+      const decoded = Buffer.from(host, 'base64').toString('utf-8'); // "<shop>.myshopify.com/admin"
+      shop = decoded.split('/')[0] || '';
+    } catch {}
+  }
+
+  if (!shop) return sendIndex(res);
+
+  const hasToken = await shopHasToken(shop);
+  if (!hasToken) {
+    return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
+  }
+
+  return sendIndex(res);
+});
+
+// Fallback for SPA (client-side routing)
+app.get('*', (req, res) => {
+  return sendIndex(res);
+});
+
+// ... rest of your server.js unchanged ...

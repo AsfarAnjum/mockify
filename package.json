@@ -10,6 +10,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@shopify/app-bridge-utils": "^3.5.1",
     "@shopify/shopify-api": "^11.2.0",
     "body-parser": "^1.20.2",
     "compression": "^1.7.4",

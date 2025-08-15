@@ -4,11 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mockup Auto-Embedder</title>
+
+    <!-- Shopify App Bridge (latest) -->
+    <script src="https://unpkg.com/@shopify/app-bridge@latest"></script>
+    <script>
+      const AppBridge = window['app-bridge'];
+      const createApp = AppBridge?.default;
+
+      if (createApp) {
+        const app = createApp({
+          apiKey: '{{apiKey}}', // injected by server
+          host: new URLSearchParams(window.location.search).get('host'),
+          forceRedirect: true
+        });
+        // ✅ expose for React code
+        window.__APP_BRIDGE_APP__ = app;
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
-    
-    <!-- ✅ Vite will replace this with built file like /assets/index-xxx.js -->
     <script type="module" src="/main.jsx"></script>
   </body>
 </html>
