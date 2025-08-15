@@ -1,3 +1,4 @@
+import { jwtDecode } from 'jwt-decode';
 import express from 'express';
 import { withAuth } from '../utils/auth-guard.js';
 import { getDB, clearShopSessions } from '../db.js';
@@ -64,8 +65,24 @@ async function handleUnauthorized(shop) {
  * Protect this route with validateAuthenticatedSession
  * This ensures the shop is extracted from the embedded app session
  */
-router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) => {
-  const shop = res.locals.shopify?.session?.shop;
+// middleware to decode JWT manually (compatible with v11)
+router.use('/ensure', async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.replace(/^Bearer /, '').trim();
+    if (!token) throw new Error('Missing token');
+
+    const payload = jwtDecode(token);
+    res.locals.shopify = { tokenPayload: payload };
+    next();
+  } catch (error) {
+    console.error('JWT decode failed:', error.message);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+});
+
+router.get('/ensure', async (req, res) => {
+  const shop = res.locals.shopify?.tokenPayload?.dest?.replace(/^https:\/\//, '');
   if (!shop) return res.status(400).json({ error: 'Missing shop' });
 
   try {
