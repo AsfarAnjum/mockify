@@ -9,38 +9,64 @@ function getShopFromUrl() {
   if (!shop && host) {
     try {
       const decoded = atob(host); // "<shop>.myshopify.com/admin"
-      shop = decoded.split('/')[0];
+      shop = (decoded.split('/')[0] || '').trim();
     } catch {}
   }
-  return shop;
+  return shop || '';
 }
 
 export default function App() {
   const shop = useMemo(getShopFromUrl, []);
   const [product, setProduct] = useState(null);
-  const [billing, setBilling] = useState({ loading: true, active: false, confirmationUrl: null, error: null });
+  const [billing, setBilling] = useState({
+    loading: true,
+    active: false,
+    error: null,
+  });
 
   useEffect(() => {
-    async function checkBilling() {
-      if (!shop) return setBilling(b => ({ ...b, loading: false }));
-      try {
-        const r = await fetch('/billing/ensure?shop=' + encodeURIComponent(shop));
-        const data = await r.json();
-        if (!r.ok || data.error) throw new Error(data.error || 'Billing check failed');
+    async function run() {
+      if (!shop) {
+        setBilling({ loading: false, active: false, error: 'No shop detected' });
+        return;
+      }
 
-        if (data.confirmationUrl) {
-          // ✅ Automatically redirect for billing
-          window.top.location.href = data.confirmationUrl;
+      try {
+        const r = await fetch(`/billing/ensure?shop=${encodeURIComponent(shop)}`, {
+          method: 'GET',
+          credentials: 'include', // ✅ helps inside Admin iframe
+          headers: { 'Accept': 'application/json' },
+        });
+
+        // If Shopify token is stale, backend replies 401 with { error:'reauth', redirect:'/auth/install?...' }
+        if (r.status === 401) {
+          const data = await r.json().catch(() => ({}));
+          if (data?.redirect) {
+            (window.top || window).location.href = data.redirect; // ✅ reauth at top-level
+            return;
+          }
+          throw new Error('Reauthentication required');
+        }
+
+        const data = await r.json();
+
+        // If backend created a billing URL, immediately redirect at top-level (not iframe)
+        if (data?.confirmationUrl) {
+          (window.top || window).location.href = data.confirmationUrl;
           return;
         }
 
-        setBilling({ loading: false, active: !!data.active, confirmationUrl: null, error: null });
+        setBilling({ loading: false, active: !!data?.active, error: null });
       } catch (e) {
-        setBilling({ loading: false, active: false, confirmationUrl: null, error: e.message });
+        setBilling({
+          loading: false,
+          active: false,
+          error: e?.message || 'Failed to fetch',
+        });
       }
     }
 
-    checkBilling();
+    run();
   }, [shop]);
 
   return (
@@ -49,8 +75,7 @@ export default function App() {
 
       {!shop && (
         <div style={{ border: '1px solid #ddd', padding: 12, borderRadius: 8, marginBottom: 16, background: '#fff' }}>
-          <strong>No shop detected.</strong> Open via Shopify Admin, or append
-          <code> ?shop=&lt;your-store&gt;.myshopify.com</code> to the URL.
+          <strong>No shop detected.</strong> Please open via Shopify Admin.
         </div>
       )}
 
@@ -58,12 +83,11 @@ export default function App() {
 
       {!billing.loading && billing.error && (
         <div style={{ border: '1px solid #ef4444', background: '#fee2e2', padding: 12, borderRadius: 8, marginBottom: 16 }}>
-          <strong>Billing error:</strong> {billing.error}
+          <strong>Billing error:</strong> {String(billing.error)}
         </div>
       )}
 
-      {/* Only show product UI after billing is active */}
-      {shop && billing.active && (
+      {shop && billing.active && !billing.loading && !billing.error && (
         <>
           <p>Upload a mockup and attach it to a product's media or description.</p>
           <ProductPicker shop={shop} onPick={setProduct} />

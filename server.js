@@ -58,19 +58,27 @@ app.use(
 );
 app.use(express.static(path.join(__dirname, 'web', 'dist'), { index: false }));
 
-// Main route — redirects to OAuth if token not found
+// Main route — derive shop from host if needed; redirect to OAuth if token missing
 app.get('/', async (req, res) => {
-  const shop = (req.query?.shop || '').toString();
-  let host = (req.query?.host || '').toString();
-  if (!host && shop) host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
+  let shop = (req.query?.shop || '').toString();
+  const host = (req.query?.host || '').toString();
 
+  // If opened from Shopify Admin, decode host to get shop
+  if (!shop && host) {
+    try {
+      const decoded = Buffer.from(host, 'base64').toString('utf-8'); // "<shop>.myshopify.com/admin"
+      shop = decoded.split('/')[0] || '';
+    } catch {}
+  }
+
+  // If still no shop, just serve the SPA (it will show a helpful message)
   if (!shop) {
-    return res.status(400).send('Missing shop parameter');
+    return res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
   }
 
   const hasToken = await shopHasToken(shop);
   if (!hasToken) {
-    return res.redirect(`/auth?shop=${shop}`);
+    return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
   }
 
   return res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
