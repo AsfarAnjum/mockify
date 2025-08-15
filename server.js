@@ -42,6 +42,13 @@ app.use('/auth', authRoutes);
 app.use('/api', apiRoutes);
 app.use('/billing', billingRoutes);
 
+async function shopHasToken(shop) {
+  if (!shop) return false;
+  const db = await getDB();
+  const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
+  return !!row?.access_token;
+}
+
 /* ---- Root: trigger top-level OAuth when needed ----
    Shopify's automated install expects your app to bounce to /app/grant.
    We do that by serving an App Bridge redirect page when there is no token. */
