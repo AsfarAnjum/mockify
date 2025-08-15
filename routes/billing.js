@@ -1,4 +1,5 @@
 import express from 'express';
+import { withAuth } from '../utils/auth-guard.js';
 import { getDB, clearShopSessions } from '../db.js';
 import { shopify } from '../shopify.js';
 
@@ -26,7 +27,8 @@ async function gql(shop, token, query, variables = {}) {
   try { json = text ? JSON.parse(text) : {}; } catch {}
 
   if (!res.ok) {
-    const err = new Error(json?.errors?.[0]?.message || json?.error || res.statusText);
+    const msg = json?.errors?.[0]?.message || json?.error || res.statusText || 'GraphQL HTTP error';
+    const err = new Error(msg);
     err.status = res.status;
     throw err;
   }
@@ -58,8 +60,12 @@ async function handleUnauthorized(shop) {
   } catch {}
 }
 
-router.get('/ensure', shopify.auth.sessionToken(), async (req, res) => {
-  const shop = req.auth?.shop;
+/**
+ * Protect this route with validateAuthenticatedSession
+ * This ensures the shop is extracted from the embedded app session
+ */
+router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) => {
+  const shop = res.locals.shopify?.session?.shop;
   if (!shop) return res.status(400).json({ error: 'Missing shop' });
 
   try {
@@ -103,12 +109,15 @@ router.get('/ensure', shopify.auth.sessionToken(), async (req, res) => {
     return res.json({ active: false, confirmationUrl });
 
   } catch (e) {
-    const status = e?.status || e?.statusCode;
+    const status = e?.status || e?.response?.status || e?.response?.code || e?.statusCode || e?.code;
     const msg = (e?.message || '').toLowerCase();
 
-    if (status === 401 || status === 403 || msg.includes('not authorized')) {
+    if ((status === 401 || status === 403) ||
+        msg.includes('invalid api key') ||
+        (msg.includes('access token') && msg.includes('invalid')) ||
+        msg.includes('not authorized')) {
       await handleUnauthorized(shop);
-      return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${encodeURIComponent(shop)}` });
+      return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
     }
 
     console.error('[/billing/ensure] error:', e);
@@ -116,11 +125,15 @@ router.get('/ensure', shopify.auth.sessionToken(), async (req, res) => {
   }
 });
 
-router.get('/confirm', (req, res) => {
-  const { shop } = req.query;
-  if (!shop) return res.status(400).send('Missing shop');
-  const host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
-  res.redirect(`/?shop=${shop}&host=${host}`);
+router.get('/confirm', async (req, res) => {
+  try {
+    const { shop } = req.query;
+    if (!shop) return res.status(400).send('Missing shop');
+    const host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
+    res.redirect(`/?shop=${shop}&host=${host}`);
+  } catch (e) {
+    res.status(500).send(e.message);
+  }
 });
 
 export default router;
