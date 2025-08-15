@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import ProductPicker from './components/ProductPicker.jsx';
 import UploadAndAttach from './components/UploadAndAttach.jsx';
+import { apiFetch } from './main.jsx'; // ✅ import token-aware fetch
 
 function getShopFromUrl() {
   const url = new URL(window.location.href);
@@ -34,10 +35,6 @@ export default function App() {
     error: null,
   });
 
-  // Use session-token fetch if present (injected by main.jsx)
-  const tokenFetch =
-    (typeof window !== 'undefined' && window.__tokenFetch) || fetch.bind(window);
-
   useEffect(() => {
     async function run() {
       if (!shop) {
@@ -46,10 +43,8 @@ export default function App() {
       }
 
       try {
-        // ✅ No shop param — backend infers shop from JWT token
-        const r = await tokenFetch('/billing/ensure');
+        const r = await apiFetch(`/billing/ensure?shop=${encodeURIComponent(shop)}`);
 
-        // stale / missing server token → backend returns 401 with { error:'reauth', redirect:'...' }
         if (r.status === 401) {
           const data = await r.json().catch(() => ({}));
           if (data?.redirect) {
@@ -61,7 +56,6 @@ export default function App() {
 
         const data = await r.json();
 
-        // Got a confirmation URL → normalize to unified admin and hard-redirect top-level
         if (data?.confirmationUrl) {
           const target = toUnifiedAdminUrl(data.confirmationUrl, shop);
           (window.top || window).location.assign(target);
@@ -79,8 +73,7 @@ export default function App() {
     }
 
     run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shop]); // tokenFetch is stable on window, safe to omit
+  }, [shop]);
 
   return (
     <div style={{ maxWidth: 960, margin: '40px auto', fontFamily: 'system-ui, -apple-system' }}>
