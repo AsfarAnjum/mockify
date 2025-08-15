@@ -1,13 +1,13 @@
 import express from 'express';
-import { authenticateJWT } from '@shopify/shopify-api';
+import { validateAuthenticatedSession } from '@shopify/shopify-api';
 import { shopify } from '../shopify.js';
 
 const router = express.Router();
 
-// ✅ Middleware to validate App Bridge session token
+// ✅ Middleware: validate session from App Bridge (returns session, does not redirect)
 router.use(async (req, res, next) => {
   try {
-    const session = await authenticateJWT(req, shopify);
+    const session = await validateAuthenticatedSession(shopify)(req, res, true);
     res.locals.shopify = { session };
     next();
   } catch (error) {
@@ -16,7 +16,7 @@ router.use(async (req, res, next) => {
   }
 });
 
-// ✅ Protected API endpoint
+// ✅ Example protected route
 router.get('/ping', (req, res) => {
   const { shop, id: sessionId } = res.locals.shopify.session;
 
