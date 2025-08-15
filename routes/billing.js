@@ -1,7 +1,7 @@
+// routes/billing.js
 import express from 'express';
-import { withAuth } from '../utils/auth-guard.js';
-import { getDB } from '../db.js';
-import { clearShopSessions } from '../db.js';
+import { getDB, clearShopSessions } from '../db.js';
+import { shopify } from '../shopify.js';
 
 const router = express.Router();
 
@@ -12,7 +12,6 @@ async function getAccessToken(shop) {
   return row.access_token;
 }
 
-// GraphQL helper that preserves HTTP status for 401/403 handling
 async function gql(shop, token, query, variables = {}) {
   const res = await fetch(`https://${shop}/admin/api/2024-07/graphql.json`, {
     method: 'POST',
@@ -25,7 +24,7 @@ async function gql(shop, token, query, variables = {}) {
 
   const text = await res.text();
   let json = {};
-  try { json = text ? JSON.parse(text) : {}; } catch { /* ignore */ }
+  try { json = text ? JSON.parse(text) : {}; } catch {}
 
   if (!res.ok) {
     const msg =
@@ -34,7 +33,7 @@ async function gql(shop, token, query, variables = {}) {
       res.statusText ||
       'GraphQL HTTP error';
     const err = new Error(msg);
-    err.status = res.status;           // <-- keep status (401/403)
+    err.status = res.status;
     throw err;
   }
   if (json?.errors?.length) {
@@ -57,7 +56,6 @@ function envBilling() {
   };
 }
 
-// Self-healing: on 401/403, wipe stale session/token and re-OAuth
 async function handleUnauthorized(shop) {
   try { await clearShopSessions?.(shop); } catch {}
   try {
@@ -66,9 +64,10 @@ async function handleUnauthorized(shop) {
   } catch {}
 }
 
-router.get('/ensure', withAuth(async (req, res, next) => {
-  const { shop } = req.query;
-  if (!shop) return res.status(400).json({ error: 'Missing shop' });
+// ✅ Updated: use session token middleware instead of withAuth
+router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) => {
+  const shop = res.locals.shopify.session?.shop;
+  if (!shop) return res.status(400).json({ error: 'Missing shop in session' });
 
   try {
     const token = await getAccessToken(shop);
@@ -80,7 +79,7 @@ router.get('/ensure', withAuth(async (req, res, next) => {
     const active = list.some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
     if (active) return res.json({ active: true });
 
-    // 2) Create subscription (IMPORTANT: include ?shop= in returnUrl)
+    // 2) Create subscription
     const cfg = envBilling();
     const returnUrl = `${cfg.returnUrlBase}?shop=${encodeURIComponent(shop)}`;
     const m = `
@@ -113,22 +112,21 @@ router.get('/ensure', withAuth(async (req, res, next) => {
     return res.json({ active: false, confirmationUrl });
 
   } catch (e) {
-    const status = e?.status || e?.response?.status || e?.response?.code || e?.statusCode || e?.code;
+    const status = e?.status || e?.response?.status || e?.statusCode;
     const msg = (e?.message || '').toLowerCase();
 
-    // If unauthorized (stale token), clear and force fresh OAuth
     if ((status === 401 || status === 403) ||
         msg.includes('invalid api key') ||
         msg.includes('access token') && msg.includes('invalid') ||
         msg.includes('not authorized')) {
       await handleUnauthorized(shop);
-      return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
+      return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${encodeURIComponent(shop)}` });
     }
 
     console.error('[/billing/ensure] error:', e);
     return res.status(500).json({ error: e.message || 'Billing failed' });
   }
-}));
+});
 
 router.get('/confirm', async (req, res) => {
   try {
