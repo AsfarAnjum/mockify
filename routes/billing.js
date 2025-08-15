@@ -4,51 +4,60 @@ import { shopify } from '../shopify.js';
 
 const router = express.Router();
 
-/**
- * Middleware to verify Shopify session token (JWT)
- */
-async function verifySessionToken(req, res, next) {
-  try {
-    const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (!token) return res.status(401).json({ error: 'Missing bearer token' });
-
-    const payload = await shopify.session.decodeSessionToken(token);
-
-    res.locals.shopify = {
-      shop: payload.dest.replace(/^https?:\/\//, ''),
-      tokenPayload: payload,
-    };
-    return next();
-  } catch (e) {
-    console.error('[billing] token verify failed:', e?.message || e);
-    return res.status(401).json({ error: 'Invalid or expired session token' });
-  }
+async function getAccessToken(shop) {
+  const db = await getDB();
+  const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
+  if (!row || !row.access_token) throw new Error('Shop not installed or token missing');
+  return row.access_token;
 }
 
-// Replace shopify.auth.tokenValidation() with our own middleware
-router.get('/ensure', verifySessionToken, async (req, res) => {
-  const shop = res.locals.shopify.shop;
-  if (!shop) return res.status(400).json({ error: 'Missing shop' });
+async function gql(shop, token, query, variables = {}) {
+  const res = await fetch(`https://${shop}/admin/api/2024-07/graphql.json`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': token,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+
+  const json = await res.json();
+  if (!res.ok || json?.errors?.length) {
+    throw new Error(json?.errors?.map(e => e.message).join('; ') || res.statusText);
+  }
+  return json.data;
+}
+
+function envBilling() {
+  const host = process.env.HOST?.replace(/\/$/, '');
+  return {
+    name: process.env.BILLING_NAME || 'Mockup Auto-Embedder Pro',
+    price: parseFloat(process.env.BILLING_PRICE || '4.99'),
+    interval: process.env.BILLING_INTERVAL || 'EVERY_30_DAYS',
+    trialDays: parseInt(process.env.BILLING_TRIAL_DAYS || '7', 10),
+    test: String(process.env.BILLING_TEST || 'true') === 'true',
+    returnUrlBase: host + (process.env.BILLING_RETURN_PATH || '/billing/confirm'),
+  };
+}
+
+router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) => {
+  const { shop, host } = req.query;
+  if (!shop || !host) return res.status(400).json({ error: 'Missing shop or host' });
 
   try {
-    const db = await getDB();
-    const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
-    if (!row?.access_token) throw new Error('Shop not installed or token missing');
+    const token = await getAccessToken(shop);
 
-    const token = row.access_token;
-
-    // 1) Check if already subscribed
+    // Check if already subscribed
     const checkQ = `query { appInstallation { activeSubscriptions { id name status } } }`;
-    const client = new shopify.clients.Graphql({ shop, accessToken: token });
-    const check = await client.query({ data: checkQ });
-
-    const list = check?.body?.data?.appInstallation?.activeSubscriptions || [];
+    const check = await gql(shop, token, checkQ);
+    const list = check?.appInstallation?.activeSubscriptions || [];
     const active = list.some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
+
     if (active) return res.json({ active: true });
 
-    // 2) Create subscription
-    const returnUrl = `${process.env.HOST}/billing/confirm?shop=${encodeURIComponent(shop)}`;
+    // Create subscription
+    const cfg = envBilling();
+    const returnUrl = `${cfg.returnUrlBase}?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
     const m = `
       mutation appSubscriptionCreate(
         $name: String!, $returnUrl: URL!, $test: Boolean!,
@@ -62,36 +71,31 @@ router.get('/ensure', verifySessionToken, async (req, res) => {
           appSubscription { id status }
         }
       }`;
-
     const vars = {
-      name: process.env.BILLING_NAME || 'Mockup Auto-Embedder Pro',
+      name: cfg.name,
       returnUrl,
-      test: String(process.env.BILLING_TEST || 'true') === 'true',
-      trialDays: parseInt(process.env.BILLING_TRIAL_DAYS || '7', 10),
+      test: cfg.test,
+      trialDays: cfg.trialDays,
       lineItems: [{
-        plan: { appRecurringPricingDetails: { price: { amount: parseFloat(process.env.BILLING_PRICE || '4.99'), currencyCode: 'USD' }, interval: process.env.BILLING_INTERVAL || 'EVERY_30_DAYS' } }
+        plan: { appRecurringPricingDetails: { price: { amount: cfg.price, currencyCode: 'USD' }, interval: cfg.interval } }
       }],
     };
 
-    const resp = await client.query({ data: { query: m, variables: vars } });
-    const confirmationUrl = resp?.body?.data?.appSubscriptionCreate?.confirmationUrl;
+    const resp = await gql(shop, token, m, vars);
+    const err = resp?.appSubscriptionCreate?.userErrors?.[0]?.message;
+    if (err) throw new Error(err);
 
-    return res.json({ active: false, confirmationUrl });
-  } catch (e) {
-    console.error('[/billing/ensure] error:', e);
-    return res.status(500).json({ error: e.message || 'Billing failed' });
+    return res.json({ active: false, confirmationUrl: resp?.appSubscriptionCreate?.confirmationUrl });
+  } catch (err) {
+    console.error('Billing ensure error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-router.get('/confirm', async (req, res) => {
-  try {
-    const { shop } = req.query;
-    if (!shop) return res.status(400).send('Missing shop');
-    const host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
-    res.redirect(`/?shop=${shop}&host=${host}`);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
+router.get('/confirm', (req, res) => {
+  const { shop, host } = req.query;
+  if (!shop || !host) return res.status(400).send('Missing shop or host');
+  res.redirect(`/?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
 });
 
 export default router;
