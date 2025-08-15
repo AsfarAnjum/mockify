@@ -26,7 +26,7 @@ const app = express();
 // ✅ Required so cookies from Shopify OAuth survive Render's proxy
 app.set('trust proxy', 1);
 
-// ✅ Ensure cookies work over HTTPS and in embedded iframes
+// ✅ Parse/sign cookies FIRST so OAuth nonce/state cookie can be set
 app.use(
   cookieParser(process.env.SESSION_SECRET, {
     sameSite: 'none',
@@ -35,22 +35,24 @@ app.use(
   })
 );
 
+// ✅ Mount /auth BEFORE compression/CORS/body parsers to avoid header issues
+app.use('/auth', authRoutes);
+
 // Allow Shopify admin embedding
 app.use((req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
-    "frame-ancestors https://admin.shopify.com https://*.myshopify.com;"
+    'frame-ancestors https://admin.shopify.com https://*.myshopify.com;'
   );
   res.removeHeader('X-Frame-Options');
   next();
 });
 
+// Remaining middlewares
 app.use(cors({ credentials: true, origin: true }));
 app.use(compression());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-
-app.use('/auth', authRoutes);
 
 // Billing, webhook, and API routes
 app.use('/billing', billingRoutes);
@@ -72,7 +74,6 @@ app.use(
 );
 app.use(express.static(path.join(__dirname, 'web', 'dist'), { index: false }));
 
-
 // helper to serve index.html with injected App Bridge apiKey
 function sendIndex(res) {
   const filePath = path.join(__dirname, 'web', 'dist', 'index.html');
@@ -82,11 +83,12 @@ function sendIndex(res) {
   res.status(200).send(html);
 }
 
-// ✅ Root: derive shop from host when embedded; start OAuth if needed
+// ✅ Root: derive shop/host; start OAuth if needed
 app.get('/', async (req, res) => {
   let shop = (req.query?.shop || '').toString();
-  const host = (req.query?.host || '').toString();
+  let host = (req.query?.host || '').toString();
 
+  // If embedded and only host is present, decode to get the shop
   if (!shop && host) {
     try {
       const decoded = Buffer.from(host, 'base64').toString('utf-8'); // "<shop>.myshopify.com/admin"
@@ -94,11 +96,17 @@ app.get('/', async (req, res) => {
     } catch {}
   }
 
+  // If we have a shop but not a host, synthesize one
+  if (shop && !host) {
+    host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
+  }
+
   if (!shop) return sendIndex(res);
 
   const hasToken = await shopHasToken(shop);
   if (!hasToken) {
-    return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
+    const qs = new URLSearchParams({ shop, host: host || '' }).toString();
+    return res.redirect(`/auth/install?${qs}`);
   }
 
   return sendIndex(res);
@@ -120,6 +128,8 @@ app.get('/app/grant', (req, res) => {
   return res.send(loginHtml);
 });
 
+// 🔎 Diagnostics
+app.get('/healthz', (req, res) => res.status(200).send('ok'));
 app.get('/diag', (req, res) => {
   res.json({
     hasApiKey: !!process.env.SHOPIFY_API_KEY,
@@ -130,6 +140,7 @@ app.get('/diag', (req, res) => {
     scopesRaw: process.env.SCOPES,
   });
 });
+
 // Fallback for SPA (client-side routing)
 app.get('*', (req, res) => {
   return sendIndex(res);
@@ -140,6 +151,5 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`✅ Server running on http://localhost:${port}`);
 });
-
 
 // ... existing imports & setup above ...
