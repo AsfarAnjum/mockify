@@ -21,8 +21,17 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// ✅ Important for Render/Proxies so OAuth cookies are marked Secure properly
+// ✅ Required so cookies from Shopify OAuth survive Render's proxy
 app.set('trust proxy', 1);
+
+// ✅ Ensure cookies work over HTTPS and in embedded iframes
+app.use(
+  cookieParser(process.env.SESSION_SECRET, {
+    sameSite: 'none',
+    secure: true,
+    httpOnly: true,
+  })
+);
 
 // Allow Shopify admin embedding
 app.use((req, res, next) => {
@@ -34,9 +43,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(cors());
+app.use(cors({ credentials: true, origin: true }));
 app.use(compression());
-app.use(cookieParser(process.env.SESSION_SECRET));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -73,13 +81,14 @@ app.get('/', async (req, res) => {
     } catch {}
   }
 
-  // If no shop, just serve SPA (it shows a helpful message)
+  // If no shop, serve SPA with "no shop" notice
   if (!shop) {
     return res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
   }
 
   const hasToken = await shopHasToken(shop);
   if (!hasToken) {
+    // Important: send user to /auth/install to set the OAuth cookie BEFORE hitting /auth/callback
     return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
   }
 
