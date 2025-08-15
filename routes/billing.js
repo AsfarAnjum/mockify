@@ -1,11 +1,10 @@
-// routes/billing.js
 import express from 'express';
 import { shopify } from '../shopify.js';
 import { getDB, clearShopSessions } from '../db.js';
 
 const router = express.Router();
 
-// Helper to get token from DB
+// Get token from DB for GraphQL calls
 async function getAccessToken(shop) {
   const db = await getDB();
   const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
@@ -13,6 +12,7 @@ async function getAccessToken(shop) {
   return row.access_token;
 }
 
+// GraphQL helper
 async function gql(shop, token, query, variables = {}) {
   const res = await fetch(`https://${shop}/admin/api/2024-07/graphql.json`, {
     method: 'POST',
@@ -26,8 +26,14 @@ async function gql(shop, token, query, variables = {}) {
   const text = await res.text();
   let json = {};
   try { json = text ? JSON.parse(text) : {}; } catch {}
+
   if (!res.ok) {
-    const err = new Error(json?.errors?.[0]?.message || res.statusText);
+    const msg =
+      json?.errors?.[0]?.message ||
+      json?.error ||
+      res.statusText ||
+      'GraphQL HTTP error';
+    const err = new Error(msg);
     err.status = res.status;
     throw err;
   }
@@ -39,6 +45,7 @@ async function gql(shop, token, query, variables = {}) {
   return json.data;
 }
 
+// Billing config
 function envBilling() {
   const host = process.env.HOST?.replace(/\/$/, '');
   return {
@@ -51,9 +58,18 @@ function envBilling() {
   };
 }
 
-// ✅ Protect with Shopify session token validation
-router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) => {
-  const shop = req.query.shop || res.locals.shopify.session.shop;
+// Clear old session/token
+async function handleUnauthorized(shop) {
+  try { await clearShopSessions?.(shop); } catch {}
+  try {
+    const db = await getDB();
+    await db.run('UPDATE shops SET access_token = NULL WHERE shop = ?', [shop]);
+  } catch {}
+}
+
+// ✅ Ensure billing route — now using tokenValidation() for JWT from App Bridge
+router.get('/ensure', shopify.auth.tokenValidation(), async (req, res) => {
+  const shop = req.query.shop;
   if (!shop) return res.status(400).json({ error: 'Missing shop' });
 
   try {
@@ -63,7 +79,7 @@ router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) =
     const checkQ = `query { appInstallation { activeSubscriptions { id name status } } }`;
     const check = await gql(shop, token, checkQ);
     const list = check?.appInstallation?.activeSubscriptions || [];
-    const active = list.some(s => ['ACTIVE', 'ACCEPTED'].includes(s.status));
+    const active = list.some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
     if (active) return res.json({ active: true });
 
     // 2) Create subscription
@@ -99,25 +115,28 @@ router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) =
     return res.json({ active: false, confirmationUrl });
 
   } catch (e) {
-    const status = e?.status || 500;
-    if (status === 401 || status === 403) {
-      await clearShopSessions(shop);
-      return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${shop}` });
+    const status = e?.status || e?.response?.status;
+    const msg = (e?.message || '').toLowerCase();
+
+    if ((status === 401 || status === 403) ||
+        msg.includes('invalid api key') ||
+        msg.includes('access token') && msg.includes('invalid') ||
+        msg.includes('not authorized')) {
+      await handleUnauthorized(shop);
+      return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${encodeURIComponent(shop)}` });
     }
+
     console.error('[/billing/ensure] error:', e);
     return res.status(500).json({ error: e.message || 'Billing failed' });
   }
 });
 
-router.get('/confirm', async (req, res) => {
-  try {
-    const { shop } = req.query;
-    if (!shop) return res.status(400).send('Missing shop');
-    const host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
-    res.redirect(`/?shop=${shop}&host=${host}`);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
+// Redirect after confirmation
+router.get('/confirm', (req, res) => {
+  const shop = req.query.shop;
+  if (!shop) return res.status(400).send('Missing shop');
+  const host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
+  res.redirect(`/?shop=${shop}&host=${host}`);
 });
 
 export default router;
