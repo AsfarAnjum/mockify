@@ -3,39 +3,46 @@ import { shopify } from '../shopify.js';
 
 const router = express.Router();
 
-// Install route — starts OAuth and keeps host param
+// STEP 1: Begin OAuth
 router.get('/install', async (req, res) => {
-  const { shop, host } = req.query;
-  if (!shop || !host) return res.status(400).send('Missing shop or host param');
+  const shop = (req.query.shop || '').toString();
+  const host = (req.query.host || '').toString();
 
-  try {
-    const authRoute = await shopify.auth.begin({
-      shop,
-      callbackPath: `/auth/callback?host=${encodeURIComponent(host)}`,
-      isOnline: false,
-    });
-    res.redirect(authRoute);
-  } catch (err) {
-    console.error('Auth install error:', err);
-    res.status(500).send('Failed to start OAuth');
+  if (!shop || !host) {
+    return res.status(400).send('Missing shop or host param');
   }
-});
 
-// Callback route — completes OAuth and sends back to app
-router.get('/callback', async (req, res) => {
   try {
-    await shopify.auth.callback({
+    const redirectUrl = await shopify.auth.begin({
+      shop,
+      isOnline: false,
+      callbackPath: '/auth/callback',
       rawRequest: req,
       rawResponse: res,
     });
-
-    const { shop, host } = req.query;
-    if (!shop || !host) return res.status(400).send('Missing shop or host param');
-
-    res.redirect(`/?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
+    return res.redirect(redirectUrl);
   } catch (err) {
-    console.error('OAuth callback error:', err);
-    res.status(500).send(err.message);
+    // 👉 TEMP: show the reason in the response so you can see it in the browser
+    console.error('[AUTH/INSTALL] error:', err);
+    const msg = err?.message || 'unknown error';
+    return res.status(500).send(`Failed to start OAuth: ${msg}`);
+  }
+});
+
+// STEP 2: Complete OAuth
+router.get('/callback', async (req, res) => {
+  try {
+    const { session } = await shopify.auth.callback({
+      rawRequest: req,
+      rawResponse: res,
+    });
+    const host = (req.query.host || '').toString();
+    const shop = session?.shop;
+    if (!shop || !host) return res.status(400).send('Missing shop or host on callback');
+    return res.redirect(`/?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
+  } catch (err) {
+    console.error('[AUTH/CALLBACK] error:', err);
+    return res.status(400).send('OAuth callback failed');
   }
 });
 

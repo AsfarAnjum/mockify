@@ -120,6 +120,16 @@ app.get('/app/grant', (req, res) => {
   return res.send(loginHtml);
 });
 
+app.get('/diag', (req, res) => {
+  res.json({
+    hasApiKey: !!process.env.SHOPIFY_API_KEY,
+    hasApiSecret: !!process.env.SHOPIFY_API_SECRET,
+    hasSessionSecret: !!process.env.SESSION_SECRET,
+    hostEnv: process.env.HOST,
+    hostNameComputed: (process.env.HOST || '').replace(/^https?:\/\//, '').replace(/\/$/, ''),
+    scopesRaw: process.env.SCOPES,
+  });
+});
 // Fallback for SPA (client-side routing)
 app.get('*', (req, res) => {
   return sendIndex(res);
