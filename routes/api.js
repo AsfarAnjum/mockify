@@ -1,21 +1,20 @@
 import express from 'express';
-import { shopify } from '../shopify.js';
-import { decodeSessionToken } from '@shopify/shopify-api';
+import jwtDecode from 'jwt-decode';
 
 const router = express.Router();
 
-// ✅ Middleware to decode and verify JWT manually
+// ✅ Middleware to decode the session token using jwt-decode
 router.use(async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization || '';
     const token = authHeader.replace(/^Bearer /, '').trim();
     if (!token) throw new Error('Missing token');
 
-    const payload = await decodeSessionToken(shopify)(token);
+    const payload = jwtDecode(token); // ✅ Pure decoding without verification
     res.locals.shopify = { tokenPayload: payload };
     next();
   } catch (error) {
-    console.error('JWT validation failed:', error.message);
+    console.error('JWT decode failed:', error.message);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 });
