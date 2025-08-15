@@ -1,9 +1,27 @@
-// routes/billing.js
 import express from 'express';
 import { getDB, clearShopSessions } from '../db.js';
 import { shopify } from '../shopify.js';
 
 const router = express.Router();
+
+// Middleware: verify Shopify session token (JWT)
+async function verifySessionToken(req, res, next) {
+  try {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (!token) return res.status(401).json({ error: 'Missing bearer token' });
+
+    const payload = await shopify.session.decodeSessionToken(token);
+    res.locals.shopify = { tokenPayload: payload };
+    return next();
+  } catch (e) {
+    console.error('[billing] token verify failed:', e?.message || e);
+    return res.status(401).json({ error: 'Invalid session token' });
+  }
+}
+
+// Apply session token verification to all billing routes
+router.use(verifySessionToken);
 
 async function getAccessToken(shop) {
   const db = await getDB();
@@ -27,11 +45,7 @@ async function gql(shop, token, query, variables = {}) {
   try { json = text ? JSON.parse(text) : {}; } catch {}
 
   if (!res.ok) {
-    const msg =
-      json?.errors?.[0]?.message ||
-      json?.error ||
-      res.statusText ||
-      'GraphQL HTTP error';
+    const msg = json?.errors?.[0]?.message || json?.error || res.statusText || 'GraphQL HTTP error';
     const err = new Error(msg);
     err.status = res.status;
     throw err;
@@ -64,22 +78,24 @@ async function handleUnauthorized(shop) {
   } catch {}
 }
 
-// ✅ Updated: use session token middleware instead of withAuth
-router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) => {
-  const shop = res.locals.shopify.session?.shop;
-  if (!shop) return res.status(400).json({ error: 'Missing shop in session' });
+router.get('/ensure', async (req, res) => {
+  // ✅ Get shop from JWT payload first, fallback to query param
+  const shop =
+    res.locals.shopify?.tokenPayload?.dest?.replace(/^https?:\/\//, '') ||
+    req.query.shop ||
+    '';
+
+  if (!shop) return res.status(400).json({ error: 'Missing shop' });
 
   try {
     const token = await getAccessToken(shop);
 
-    // 1) Check if already subscribed
     const checkQ = `query { appInstallation { activeSubscriptions { id name status } } }`;
     const check = await gql(shop, token, checkQ);
     const list = check?.appInstallation?.activeSubscriptions || [];
     const active = list.some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
     if (active) return res.json({ active: true });
 
-    // 2) Create subscription
     const cfg = envBilling();
     const returnUrl = `${cfg.returnUrlBase}?shop=${encodeURIComponent(shop)}`;
     const m = `
@@ -108,17 +124,19 @@ router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) =
     const err = resp?.appSubscriptionCreate?.userErrors?.[0]?.message;
     if (err) throw new Error(err);
 
-    const confirmationUrl = resp?.appSubscriptionCreate?.confirmationUrl;
-    return res.json({ active: false, confirmationUrl });
+    return res.json({ active: false, confirmationUrl: resp?.appSubscriptionCreate?.confirmationUrl });
 
   } catch (e) {
-    const status = e?.status || e?.response?.status || e?.statusCode;
+    const status = e?.status;
     const msg = (e?.message || '').toLowerCase();
 
-    if ((status === 401 || status === 403) ||
-        msg.includes('invalid api key') ||
-        msg.includes('access token') && msg.includes('invalid') ||
-        msg.includes('not authorized')) {
+    if (
+      status === 401 ||
+      status === 403 ||
+      msg.includes('invalid api key') ||
+      (msg.includes('access token') && msg.includes('invalid')) ||
+      msg.includes('not authorized')
+    ) {
       await handleUnauthorized(shop);
       return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${encodeURIComponent(shop)}` });
     }

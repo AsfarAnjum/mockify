@@ -34,9 +34,9 @@ export default function App() {
     error: null,
   });
 
-  // Use the secure apiFetch from main.jsx (with Shopify JWT)
+  // Use session-token fetch if present (injected by main.jsx)
   const tokenFetch =
-    (typeof window !== 'undefined' && window.apiFetch) || fetch.bind(window);
+    (typeof window !== 'undefined' && window.__tokenFetch) || fetch.bind(window);
 
   useEffect(() => {
     async function run() {
@@ -46,10 +46,8 @@ export default function App() {
       }
 
       try {
-        const r = await tokenFetch(
-          `/billing/ensure?shop=${encodeURIComponent(shop)}`,
-          { method: 'GET' }
-        );
+        // ✅ No shop param — backend infers shop from JWT token
+        const r = await tokenFetch('/billing/ensure');
 
         // stale / missing server token → backend returns 401 with { error:'reauth', redirect:'...' }
         if (r.status === 401) {
@@ -81,7 +79,8 @@ export default function App() {
     }
 
     run();
-  }, [shop, tokenFetch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shop]); // tokenFetch is stable on window, safe to omit
 
   return (
     <div style={{ maxWidth: 960, margin: '40px auto', fontFamily: 'system-ui, -apple-system' }}>

@@ -1,20 +1,17 @@
 import express from 'express';
-import { getDB } from '../db.js';
+import { withAuth } from '../utils/auth-guard.js';
+import { getDB, clearShopSessions } from '../db.js';
+import { shopify } from '../shopify.js';
 
 const router = express.Router();
 
 async function getAccessToken(shop) {
   const db = await getDB();
   const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
-  if (!row || !row.access_token) {
-    const e = new Error('Shop not installed or token missing');
-    e.status = 401;
-    throw e;
-  }
+  if (!row || !row.access_token) throw new Error('Shop not installed or token missing');
   return row.access_token;
 }
 
-// GraphQL helper that preserves HTTP status for 401/403 handling
 async function gql(shop, token, query, variables = {}) {
   const res = await fetch(`https://${shop}/admin/api/2024-07/graphql.json`, {
     method: 'POST',
@@ -27,22 +24,17 @@ async function gql(shop, token, query, variables = {}) {
 
   const text = await res.text();
   let json = {};
-  try { json = text ? JSON.parse(text) : {}; } catch { /* non-JSON body */ }
+  try { json = text ? JSON.parse(text) : {}; } catch {}
 
   if (!res.ok) {
-    const msg =
-      json?.errors?.[0]?.message ||
-      json?.error ||
-      res.statusText ||
-      'GraphQL HTTP error';
+    const msg = json?.errors?.[0]?.message || json?.error || res.statusText || 'GraphQL HTTP error';
     const err = new Error(msg);
-    err.status = res.status;       // <-- keep HTTP status (401/403, etc.)
-    err.body = text;
+    err.status = res.status;
     throw err;
   }
   if (json?.errors?.length) {
     const err = new Error(json.errors.map(e => e.message).join('; '));
-    err.status = 200;
+    err.status = res.status;
     throw err;
   }
   return json.data;
@@ -60,21 +52,28 @@ function envBilling() {
   };
 }
 
-router.get('/ensure', async (req, res) => {
-  const { shop } = req.query;
-  if (!shop) return res.status(400).json({ error: 'Missing shop' });
+async function handleUnauthorized(shop) {
+  try { await clearShopSessions?.(shop); } catch {}
+  try {
+    const db = await getDB();
+    await db.run('UPDATE shops SET access_token = NULL WHERE shop = ?', [shop]);
+  } catch {}
+}
+
+router.get('/ensure', withAuth(async (req, res) => {
+  // ✅ Get shop from JWT payload instead of query param
+  const shop = res.locals.shopify?.tokenPayload?.dest?.replace(/^https:\/\//, '');
+  if (!shop) return res.status(400).json({ error: 'Missing shop from token' });
 
   try {
     const token = await getAccessToken(shop);
 
-    // 1) Already subscribed?
     const checkQ = `query { appInstallation { activeSubscriptions { id name status } } }`;
     const check = await gql(shop, token, checkQ);
-    const active = (check?.appInstallation?.activeSubscriptions || [])
-      .some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
+    const list = check?.appInstallation?.activeSubscriptions || [];
+    const active = list.some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
     if (active) return res.json({ active: true });
 
-    // 2) Create subscription
     const cfg = envBilling();
     const returnUrl = `${cfg.returnUrlBase}?shop=${encodeURIComponent(shop)}`;
     const m = `
@@ -103,37 +102,31 @@ router.get('/ensure', async (req, res) => {
     const err = resp?.appSubscriptionCreate?.userErrors?.[0]?.message;
     if (err) throw new Error(err);
 
-    return res.json({ active: false, confirmationUrl: resp?.appSubscriptionCreate?.confirmationUrl });
+    const confirmationUrl = resp?.appSubscriptionCreate?.confirmationUrl;
+    return res.json({ active: false, confirmationUrl });
 
   } catch (e) {
-    const status =
-      e?.status || e?.response?.status || e?.response?.code || e?.statusCode || e?.code;
-    const msg = (e?.message || e?.body || '').toString().toLowerCase();
+    const status = e?.status || e?.statusCode || e?.code;
+    const msg = (e?.message || '').toLowerCase();
 
-    // Managed pricing apps cannot create charges → treat as active and continue
-    if (msg.includes('managed pricing apps cannot use the billing api')) {
-      return res.json({ active: true, managedPricing: true });
-    }
-
-    // Stale/invalid token → return JSON telling the client to re-auth
-    if (status === 401 || status === 403 ||
-        msg.includes('invalid api key') ||
-        (msg.includes('access token') && (msg.includes('invalid') || msg.includes('unrecognized'))) ||
-        msg.includes('not authorized')) {
-      return res.status(401).json({
-        error: 'reauth',
-        redirect: `/auth/install?shop=${encodeURIComponent(shop)}`
-      });
+    if (
+      status === 401 || status === 403 ||
+      msg.includes('invalid api key') ||
+      (msg.includes('access token') && msg.includes('invalid')) ||
+      msg.includes('not authorized')
+    ) {
+      await handleUnauthorized(shop);
+      return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${encodeURIComponent(shop)}` });
     }
 
     console.error('[/billing/ensure] error:', e);
     return res.status(500).json({ error: e.message || 'Billing failed' });
   }
-});
+}));
 
 router.get('/confirm', async (req, res) => {
   try {
-    const { shop } = req.query;
+    const shop = req.query.shop;
     if (!shop) return res.status(400).send('Missing shop');
     const host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
     res.redirect(`/?shop=${shop}&host=${host}`);
