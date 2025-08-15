@@ -1,14 +1,18 @@
 import express from 'express';
-import { validateAuthenticatedSession } from '@shopify/shopify-api';
 import { shopify } from '../shopify.js';
+import { decodeSessionToken } from '@shopify/shopify-api';
 
 const router = express.Router();
 
-// ✅ Middleware: validate session from App Bridge (returns session, does not redirect)
+// ✅ Middleware to decode and verify JWT manually
 router.use(async (req, res, next) => {
   try {
-    const session = await validateAuthenticatedSession(shopify)(req, res, true);
-    res.locals.shopify = { session };
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.replace(/^Bearer /, '').trim();
+    if (!token) throw new Error('Missing token');
+
+    const payload = await decodeSessionToken(shopify)(token);
+    res.locals.shopify = { tokenPayload: payload };
     next();
   } catch (error) {
     console.error('JWT validation failed:', error.message);
@@ -18,12 +22,11 @@ router.use(async (req, res, next) => {
 
 // ✅ Example protected route
 router.get('/ping', (req, res) => {
-  const { shop, id: sessionId } = res.locals.shopify.session;
-
+  const shop = res.locals.shopify?.tokenPayload?.dest?.replace(/^https:\/\//, '');
   res.json({
     ok: true,
     shop,
-    sessionId,
+    tokenPayload: res.locals.shopify.tokenPayload,
   });
 });
 
