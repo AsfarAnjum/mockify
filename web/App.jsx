@@ -27,17 +27,21 @@ export default function App() {
         const r = await fetch('/billing/ensure?shop=' + encodeURIComponent(shop));
         const data = await r.json();
         if (!r.ok || data.error) throw new Error(data.error || 'Billing check failed');
-        setBilling({ loading: false, active: !!data.active, confirmationUrl: data.confirmationUrl || null, error: null });
+
+        if (data.confirmationUrl) {
+          // ✅ Automatically redirect for billing
+          window.top.location.href = data.confirmationUrl;
+          return;
+        }
+
+        setBilling({ loading: false, active: !!data.active, confirmationUrl: null, error: null });
       } catch (e) {
         setBilling({ loading: false, active: false, confirmationUrl: null, error: e.message });
       }
     }
+
     checkBilling();
   }, [shop]);
-
-  const startTrial = () => {
-    if (billing.confirmationUrl) (window.top || window).location.href = billing.confirmationUrl;
-  };
 
   return (
     <div style={{ maxWidth: 960, margin: '40px auto', fontFamily: 'system-ui, -apple-system' }}>
@@ -55,17 +59,6 @@ export default function App() {
       {!billing.loading && billing.error && (
         <div style={{ border: '1px solid #ef4444', background: '#fee2e2', padding: 12, borderRadius: 8, marginBottom: 16 }}>
           <strong>Billing error:</strong> {billing.error}
-        </div>
-      )}
-
-      {!billing.loading && !billing.active && shop && !billing.error && (
-        <div style={{ border: '1px solid #f59e0b', background: '#fffbeb', padding: 12, borderRadius: 8, marginBottom: 16 }}>
-          <strong>Start your 7-day free trial</strong> to unlock mockup attachments.
-          <div style={{ marginTop: 8 }}>
-            <button onClick={startTrial} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #111', background: '#111', color: '#fff' }}>
-              Start free trial
-            </button>
-          </div>
         </div>
       )}
 
