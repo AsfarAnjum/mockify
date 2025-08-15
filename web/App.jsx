@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import ProductPicker from './components/ProductPicker.jsx';
 import UploadAndAttach from './components/UploadAndAttach.jsx';
-import { apiFetch } from './main.jsx'; // ✅ import token-aware fetch
+import { apiFetch } from './main.jsx'; // ✅ token-aware fetch
 
 function getShopFromUrl() {
   const url = new URL(window.location.href);
@@ -26,54 +26,62 @@ function toUnifiedAdminUrl(confirmationUrl, shopDomain) {
     : confirmationUrl;
 }
 
+async function parseJsonSafe(res) {
+  const ct = res.headers.get('content-type') || '';
+  if (ct.includes('application/json')) {
+    return res.json();
+  }
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    // surface a friendly error for HTML/plain responses
+    throw new Error(text?.slice(0, 200) || 'Unexpected non‑JSON response');
+  }
+}
+
 export default function App() {
   const shop = useMemo(getShopFromUrl, []);
   const [product, setProduct] = useState(null);
-  const [billing, setBilling] = useState({
-    loading: true,
-    active: false,
-    error: null,
-  });
+  const [billing, setBilling] = useState({ loading: true, active: false, error: null });
 
-  useEffect(() => {
-    async function run() {
-      if (!shop) {
-        setBilling({ loading: false, active: false, error: 'No shop detected' });
+  const ensureBilling = useCallback(async () => {
+    setBilling((b) => ({ ...b, loading: true, error: null }));
+    try {
+      // Server derives shop from JWT; no need to pass ?shop=...
+      const r = await apiFetch('/billing/ensure', { method: 'GET' });
+
+      // 401 → server tells us to reauth with a JSON body
+      if (r.status === 401) {
+        const data = await parseJsonSafe(r).catch(() => ({}));
+        if (data?.redirect) {
+          (window.top || window).location.href = data.redirect;
+          return;
+        }
+        throw new Error('Reauthentication required');
+      }
+
+      const data = await parseJsonSafe(r);
+
+      if (data?.confirmationUrl) {
+        const target = toUnifiedAdminUrl(data.confirmationUrl, shop);
+        (window.top || window).location.assign(target);
         return;
       }
 
-      try {
-        const r = await apiFetch(`/billing/ensure?shop=${encodeURIComponent(shop)}`);
-
-        if (r.status === 401) {
-          const data = await r.json().catch(() => ({}));
-          if (data?.redirect) {
-            (window.top || window).location.href = data.redirect;
-            return;
-          }
-          throw new Error('Reauthentication required');
-        }
-
-        const data = await r.json();
-
-        if (data?.confirmationUrl) {
-          const target = toUnifiedAdminUrl(data.confirmationUrl, shop);
-          (window.top || window).location.assign(target);
-          return;
-        }
-
-        setBilling({ loading: false, active: !!data?.active, error: null });
-      } catch (e) {
-        setBilling({
-          loading: false,
-          active: false,
-          error: e?.message || 'Failed to fetch',
-        });
-      }
+      setBilling({ loading: false, active: !!data?.active, error: null });
+    } catch (e) {
+      setBilling({ loading: false, active: false, error: e?.message || 'Failed to fetch' });
     }
-
-    run();
   }, [shop]);
+
+  useEffect(() => {
+    if (!shop) {
+      setBilling({ loading: false, active: false, error: 'No shop detected' });
+      return;
+    }
+    ensureBilling();
+  }, [shop, ensureBilling]);
 
   return (
     <div style={{ maxWidth: 960, margin: '40px auto', fontFamily: 'system-ui, -apple-system' }}>
@@ -90,6 +98,9 @@ export default function App() {
       {!billing.loading && billing.error && (
         <div style={{ border: '1px solid #ef4444', background: '#fee2e2', padding: 12, borderRadius: 8, marginBottom: 16 }}>
           <strong>Billing error:</strong> {String(billing.error)}
+          <div style={{ marginTop: 8 }}>
+            <button onClick={ensureBilling} style={{ padding: '6px 12px', cursor: 'pointer' }}>Try again</button>
+          </div>
         </div>
       )}
 
