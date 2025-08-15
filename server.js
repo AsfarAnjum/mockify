@@ -14,6 +14,8 @@ import billingRoutes from './routes/billing.js';
 import complianceRoutes from './routes/compliance.js';
 import { getDB } from './db.js';
 
+import { shopify } from './shopify.js';
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,11 +50,12 @@ app.use(compression());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Routes
-app.use('/webhooks/privacy', complianceRoutes);
 app.use('/auth', authRoutes);
-app.use('/api', apiRoutes);
+
+// Billing, webhook, and API routes
 app.use('/billing', billingRoutes);
+app.use('/webhooks/privacy', complianceRoutes);
+app.use('/api', apiRoutes);
 
 // Function to check if shop has access token
 async function shopHasToken(shop) {
@@ -69,32 +72,6 @@ app.use(
 );
 app.use(express.static(path.join(__dirname, 'web', 'dist'), { index: false }));
 
-
-// Grant route to render login.html with variables
-app.get('/app/grant', (req, res) => {
-  const shop = req.query.shop || '';
-  const host = req.query.host || '';
-  const apiKey = process.env.SHOPIFY_API_KEY || '';
-
-  const loginHtml = fs
-    .readFileSync(path.join(__dirname, 'web', 'login.html'), 'utf-8')
-    .replace('{{shop}}', shop)
-    .replace('{{host}}', host)
-    .replace('{{apiKey}}', apiKey);
-
-  res.setHeader('Content-Type', 'text/html');
-  return res.send(loginHtml);
-});
-
-
-// Start server
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`✅ Server running on http://localhost:${port}`);
-});
-
-
-// ... existing imports & setup above ...
 
 // helper to serve index.html with injected App Bridge apiKey
 function sendIndex(res) {
@@ -121,10 +98,26 @@ app.get('/', async (req, res) => {
 
   const hasToken = await shopHasToken(shop);
   if (!hasToken) {
-    return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
+    return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
   }
 
   return sendIndex(res);
+});
+
+// Grant route to render login.html with variables
+app.get('/app/grant', (req, res) => {
+  const shop = req.query.shop || '';
+  const host = req.query.host || '';
+  const apiKey = process.env.SHOPIFY_API_KEY || '';
+
+  const loginHtml = fs
+    .readFileSync(path.join(__dirname, 'web', 'login.html'), 'utf-8')
+    .replace('{{shop}}', shop)
+    .replace('{{host}}', host)
+    .replace('{{apiKey}}', apiKey);
+
+  res.setHeader('Content-Type', 'text/html');
+  return res.send(loginHtml);
 });
 
 // Fallback for SPA (client-side routing)
@@ -132,4 +125,11 @@ app.get('*', (req, res) => {
   return sendIndex(res);
 });
 
-// ... rest of your server.js unchanged ...
+// Start server
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`✅ Server running on http://localhost:${port}`);
+});
+
+
+// ... existing imports & setup above ...
