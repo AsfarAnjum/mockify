@@ -1,48 +1,60 @@
-import express from 'express';
-import { shopify } from '../shopify.js';
+import express from "express";
+import { shopify } from "../shopify.js";
 
 const router = express.Router();
 
-// STEP 1: Begin OAuth
-router.get('/install', async (req, res) => {
-  const shop = (req.query.shop || '').toString();
-  const host = (req.query.host || '').toString();
+// STEP 1: Begin OAuth (v11) — shopify.auth.begin() performs the redirect itself
+router.get("/install", async (req, res) => {
+  const shop = (req.query.shop || "").toString();
+  const host = (req.query.host || "").toString();
 
   if (!shop || !host) {
-    return res.status(400).send('Missing shop or host param');
+    if (!res.headersSent) return res.status(400).send("Missing shop or host param");
+    return;
   }
 
   try {
-    const redirectUrl = await shopify.auth.begin({
+    await shopify.auth.begin({
       shop,
       isOnline: false,
-      callbackPath: '/auth/callback',
+      callbackPath: "/auth/callback",
       rawRequest: req,
       rawResponse: res,
     });
-    return res.redirect(redirectUrl);
+    // NOTE: Do not call res.redirect here — begin() already handled it.
   } catch (err) {
-    // 👉 TEMP: show the reason in the response so you can see it in the browser
-    console.error('[AUTH/INSTALL] error:', err);
-    const msg = err?.message || 'unknown error';
-    return res.status(500).send(`Failed to start OAuth: ${msg}`);
+    console.error("[AUTH/INSTALL] error:", err);
+    const msg = err?.message || "unknown error";
+    if (!res.headersSent) {
+      return res.status(500).send(`Failed to start OAuth: ${msg}`);
+    }
   }
 });
 
-// STEP 2: Complete OAuth
-router.get('/callback', async (req, res) => {
+// STEP 2: Complete OAuth — then redirect back into the app
+router.get("/callback", async (req, res) => {
   try {
     const { session } = await shopify.auth.callback({
       rawRequest: req,
       rawResponse: res,
     });
-    const host = (req.query.host || '').toString();
+
+    const host = (req.query.host || "").toString();
     const shop = session?.shop;
-    if (!shop || !host) return res.status(400).send('Missing shop or host on callback');
-    return res.redirect(`/?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
+
+    if (!shop || !host) {
+      if (!res.headersSent) return res.status(400).send("Missing shop or host on callback");
+      return;
+    }
+
+    if (!res.headersSent) {
+      return res.redirect(`/?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
+    }
   } catch (err) {
-    console.error('[AUTH/CALLBACK] error:', err);
-    return res.status(400).send('OAuth callback failed');
+    console.error("[AUTH/CALLBACK] error:", err);
+    if (!res.headersSent) {
+      return res.status(400).send("OAuth callback failed");
+    }
   }
 });
 
