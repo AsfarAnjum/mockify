@@ -21,9 +21,19 @@ async function gql(shop, token, query, variables = {}) {
     body: JSON.stringify({ query, variables }),
   });
 
-  const json = await res.json();
-  if (!res.ok || json?.errors?.length) {
-    throw new Error(json?.errors?.map(e => e.message).join('; ') || res.statusText);
+  const text = await res.text();
+  let json = {};
+  try { json = text ? JSON.parse(text) : {}; } catch {}
+
+  if (!res.ok) {
+    const err = new Error(json?.errors?.[0]?.message || json?.error || res.statusText);
+    err.status = res.status;
+    throw err;
+  }
+  if (json?.errors?.length) {
+    const err = new Error(json.errors.map(e => e.message).join('; '));
+    err.status = res.status;
+    throw err;
   }
   return json.data;
 }
@@ -40,24 +50,29 @@ function envBilling() {
   };
 }
 
-router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) => {
-  const { shop, host } = req.query;
-  if (!shop || !host) return res.status(400).json({ error: 'Missing shop or host' });
+async function handleUnauthorized(shop) {
+  try { await clearShopSessions?.(shop); } catch {}
+  try {
+    const db = await getDB();
+    await db.run('UPDATE shops SET access_token = NULL WHERE shop = ?', [shop]);
+  } catch {}
+}
+
+router.get('/ensure', shopify.auth.sessionToken(), async (req, res) => {
+  const shop = req.auth?.shop;
+  if (!shop) return res.status(400).json({ error: 'Missing shop' });
 
   try {
     const token = await getAccessToken(shop);
 
-    // Check if already subscribed
     const checkQ = `query { appInstallation { activeSubscriptions { id name status } } }`;
     const check = await gql(shop, token, checkQ);
     const list = check?.appInstallation?.activeSubscriptions || [];
     const active = list.some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
-
     if (active) return res.json({ active: true });
 
-    // Create subscription
     const cfg = envBilling();
-    const returnUrl = `${cfg.returnUrlBase}?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+    const returnUrl = `${cfg.returnUrlBase}?shop=${encodeURIComponent(shop)}`;
     const m = `
       mutation appSubscriptionCreate(
         $name: String!, $returnUrl: URL!, $test: Boolean!,
@@ -80,22 +95,32 @@ router.get('/ensure', shopify.validateAuthenticatedSession(), async (req, res) =
         plan: { appRecurringPricingDetails: { price: { amount: cfg.price, currencyCode: 'USD' }, interval: cfg.interval } }
       }],
     };
-
     const resp = await gql(shop, token, m, vars);
     const err = resp?.appSubscriptionCreate?.userErrors?.[0]?.message;
     if (err) throw new Error(err);
 
-    return res.json({ active: false, confirmationUrl: resp?.appSubscriptionCreate?.confirmationUrl });
-  } catch (err) {
-    console.error('Billing ensure error:', err);
-    res.status(500).json({ error: err.message });
+    const confirmationUrl = resp?.appSubscriptionCreate?.confirmationUrl;
+    return res.json({ active: false, confirmationUrl });
+
+  } catch (e) {
+    const status = e?.status || e?.statusCode;
+    const msg = (e?.message || '').toLowerCase();
+
+    if (status === 401 || status === 403 || msg.includes('not authorized')) {
+      await handleUnauthorized(shop);
+      return res.status(401).json({ error: 'reauth', redirect: `/auth/install?shop=${encodeURIComponent(shop)}` });
+    }
+
+    console.error('[/billing/ensure] error:', e);
+    return res.status(500).json({ error: e.message || 'Billing failed' });
   }
 });
 
 router.get('/confirm', (req, res) => {
-  const { shop, host } = req.query;
-  if (!shop || !host) return res.status(400).send('Missing shop or host');
-  res.redirect(`/?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
+  const { shop } = req.query;
+  if (!shop) return res.status(400).send('Missing shop');
+  const host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
+  res.redirect(`/?shop=${shop}&host=${host}`);
 });
 
 export default router;
