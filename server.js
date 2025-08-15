@@ -45,6 +45,7 @@ app.use('/billing', billingRoutes);
 /* ---- Root: trigger top-level OAuth when needed ----
    Shopify's automated install expects your app to bounce to /app/grant.
    We do that by serving an App Bridge redirect page when there is no token. */
+/* ---- ROOT: use Admin /app/grant first, then /auth/install ---- */
 app.get('/', async (req, res) => {
   const shop = (req.query?.shop || '').toString();
   let host = (req.query?.host || '').toString();
@@ -52,15 +53,12 @@ app.get('/', async (req, res) => {
   // derive host if missing
   if (!host && shop) host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
 
-  // check if we already have a token for this shop
-  let hasToken = false;
-  if (shop) {
-    const db = await getDB();
-    const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
-    hasToken = !!row?.access_token;
-  }
+  const tokenReady = await hasToken(shop);
 
-  if (shop && !hasToken) {
+  // If no token yet, serve a small page that:
+  // - If in iframe -> App Bridge redirect to ADMIN_PATH '/app/grant' (Shopify expects this)
+  // - If at top level -> go straight to /auth/install to begin OAuth
+  if (shop && !tokenReady) {
     const apiKey = process.env.SHOPIFY_API_KEY || '';
     return res
       .status(200)
@@ -70,11 +68,20 @@ app.get('/', async (req, res) => {
 <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
 </head><body>
 <script>
-  var AppBridge = window['app-bridge'];
-  var createApp = AppBridge.default;
-  var Redirect = AppBridge.actions.Redirect;
-  var app = createApp({ apiKey: '${apiKey}', host: '${host}', forceRedirect: true });
-  Redirect.create(app).dispatch(Redirect.Action.APP, '/auth/install?shop=${encodeURIComponent(shop)}');
+  (function() {
+    var inIframe = (window.top !== window.self);
+    if (inIframe) {
+      var AppBridge = window['app-bridge'];
+      var createApp = AppBridge.default;
+      var Redirect = AppBridge.actions.Redirect;
+      var app = createApp({ apiKey: '${apiKey}', host: '${host}', forceRedirect: true });
+      // step 1: tell Shopify Admin to take us top-level
+      Redirect.create(app).dispatch(Redirect.Action.ADMIN_PATH, '/app/grant');
+    } else {
+      // step 2: now at top level, start OAuth with our app
+      window.location.replace('/auth/install?shop=${encodeURIComponent(shop)}');
+    }
+  })();
 </script>
 </body></html>`);
   }
