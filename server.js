@@ -69,31 +69,6 @@ app.use(
 );
 app.use(express.static(path.join(__dirname, 'web', 'dist'), { index: false }));
 
-// ✅ Root: derive shop from host when embedded; start OAuth if needed
-app.get('/', async (req, res) => {
-  let shop = (req.query?.shop || '').toString();
-  const host = (req.query?.host || '').toString();
-
-  if (!shop && host) {
-    try {
-      const decoded = Buffer.from(host, 'base64').toString('utf-8'); // "<shop>.myshopify.com/admin"
-      shop = decoded.split('/')[0] || '';
-    } catch {}
-  }
-
-  // If no shop, serve SPA with "no shop" notice
-  if (!shop) {
-    return res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
-  }
-
-  const hasToken = await shopHasToken(shop);
-  if (!hasToken) {
-    // Important: send user to /auth/install to set the OAuth cookie BEFORE hitting /auth/callback
-    return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
-  }
-
-  return res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
-});
 
 // Grant route to render login.html with variables
 app.get('/app/grant', (req, res) => {
@@ -111,10 +86,6 @@ app.get('/app/grant', (req, res) => {
   return res.send(loginHtml);
 });
 
-// Fallback for SPA (client-side routing)
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
-});
 
 // Start server
 const port = process.env.PORT || 3000;
