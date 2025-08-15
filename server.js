@@ -60,7 +60,7 @@ app.get('/', async (req, res) => {
   // derive host if missing
   if (!host && shop) host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
 
-  const tokenReady = await hasToken(shop);
+  const tokenReady = await shopHasToken(shop);
 
   // If no token yet, serve a small page that:
   // - If in iframe -> App Bridge redirect to ADMIN_PATH '/app/grant' (Shopify expects this)
