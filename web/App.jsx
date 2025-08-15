@@ -15,6 +15,16 @@ function getShopFromUrl() {
   return shop || '';
 }
 
+function toUnifiedAdminUrl(confirmationUrl, shopDomain) {
+  if (!confirmationUrl || !shopDomain) return confirmationUrl;
+  const store = shopDomain.replace('.myshopify.com', '');
+  const classicRoot = `https://${shopDomain}/admin`;
+  const unifiedRoot = `https://admin.shopify.com/store/${store}`;
+  return confirmationUrl.startsWith(classicRoot)
+    ? confirmationUrl.replace(classicRoot, unifiedRoot)
+    : confirmationUrl;
+}
+
 export default function App() {
   const shop = useMemo(getShopFromUrl, []);
   const [product, setProduct] = useState(null);
@@ -34,15 +44,15 @@ export default function App() {
       try {
         const r = await fetch(`/billing/ensure?shop=${encodeURIComponent(shop)}`, {
           method: 'GET',
-          credentials: 'include', // ✅ helps inside Admin iframe
-          headers: { 'Accept': 'application/json' },
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
         });
 
-        // If Shopify token is stale, backend replies 401 with { error:'reauth', redirect:'/auth/install?...' }
+        // stale / missing token → backend returns 401 with { error:'reauth', redirect:'...' }
         if (r.status === 401) {
           const data = await r.json().catch(() => ({}));
           if (data?.redirect) {
-            (window.top || window).location.href = data.redirect; // ✅ reauth at top-level
+            (window.top || window).location.href = data.redirect;
             return;
           }
           throw new Error('Reauthentication required');
@@ -50,9 +60,10 @@ export default function App() {
 
         const data = await r.json();
 
-        // If backend created a billing URL, immediately redirect at top-level (not iframe)
+        // Got a confirmation URL → normalize to unified admin and hard-redirect top-level
         if (data?.confirmationUrl) {
-          (window.top || window).location.href = data.confirmationUrl;
+          const target = toUnifiedAdminUrl(data.confirmationUrl, shop);
+          (window.top || window).location.assign(target);
           return;
         }
 
