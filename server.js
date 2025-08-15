@@ -21,6 +21,9 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+// ✅ Important for Render/Proxies so OAuth cookies are marked Secure properly
+app.set('trust proxy', 1);
+
 // Allow Shopify admin embedding
 app.use((req, res, next) => {
   res.setHeader(
@@ -58,12 +61,11 @@ app.use(
 );
 app.use(express.static(path.join(__dirname, 'web', 'dist'), { index: false }));
 
-// Main route — derive shop from host if needed; redirect to OAuth if token missing
+// ✅ Root: derive shop from host when embedded; start OAuth if needed
 app.get('/', async (req, res) => {
   let shop = (req.query?.shop || '').toString();
   const host = (req.query?.host || '').toString();
 
-  // If opened from Shopify Admin, decode host to get shop
   if (!shop && host) {
     try {
       const decoded = Buffer.from(host, 'base64').toString('utf-8'); // "<shop>.myshopify.com/admin"
@@ -71,7 +73,7 @@ app.get('/', async (req, res) => {
     } catch {}
   }
 
-  // If still no shop, just serve the SPA (it will show a helpful message)
+  // If no shop, just serve SPA (it shows a helpful message)
   if (!shop) {
     return res.sendFile(path.join(__dirname, 'web', 'dist', 'index.html'));
   }
