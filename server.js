@@ -59,9 +59,8 @@ app.use('/api', apiRoutes);
 async function shopHasToken(shop) {
   if (!shop) return false;
   try {
-    const offlineId = shopify.session.getOfflineId(shop);
-    const s = await shopify.sessionStorage.loadSession(offlineId);
-    return !!s?.accessToken;
+    const appSesstion = shopify.session.customAppSession()
+    return !!appSesstion?.accessToken;
   } catch (e) {
     console.error('shopHasToken error', e?.message || e);
     return false;
