@@ -13,7 +13,8 @@ router.get("/install", async (req, res) => {
     return;
   }
 
- router.get('/exit-iframe', (req, res) => {
+// STEP 0: Exit the iframe and continue OAuth at the top level
+router.get('/exit-iframe', (req, res) => {
   const shop = (req.query.shop || '').toString();
   if (!shop) return res.status(400).send('Missing shop');
 
@@ -29,7 +30,7 @@ router.get("/install", async (req, res) => {
 </script>
 </body></html>`;
   res.status(200).type('text/html; charset=utf-8').send(html);
-}); 
+});
 
   try {
     await shopify.auth.begin({
