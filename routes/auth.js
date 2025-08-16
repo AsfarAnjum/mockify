@@ -13,6 +13,24 @@ router.get("/install", async (req, res) => {
     return;
   }
 
+ router.get('/exit-iframe', (req, res) => {
+  const shop = (req.query.shop || '').toString();
+  if (!shop) return res.status(400).send('Missing shop');
+
+  const redirectUri = `/auth/install?shop=${encodeURIComponent(shop)}`;
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head><body>
+<script>
+  if (window.top === window.self) {
+    window.location.href = ${JSON.stringify(redirectUri)};
+  } else {
+    window.top.location.href = ${JSON.stringify(redirectUri)};
+  }
+</script>
+</body></html>`;
+  res.status(200).type('text/html; charset=utf-8').send(html);
+}); 
+
   try {
     await shopify.auth.begin({
       shop,
