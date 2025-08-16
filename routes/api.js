@@ -1,5 +1,5 @@
 import express from 'express';
-import { jwtDecode } from 'jwt-decode';
+import jwtDecode from 'jwt-decode';
 
 const router = express.Router();
 
