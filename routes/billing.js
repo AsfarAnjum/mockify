@@ -21,8 +21,7 @@ async function getShopFromAuthHeader(req) {
 
 // Load the OFFLINE session/token stored by Shopify during OAuth
 async function loadOfflineSession(shop) {
-  const offlineId = shopify.session.getOfflineId(shop);
-  const session = await shopify.sessionStorage.loadSession(offlineId);
+  const session =  shopify.session.customAppSession(shop);
   if (!session?.accessToken) throw new Error('No offline session/access token stored');
   return session;
 }
