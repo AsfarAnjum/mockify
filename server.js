@@ -7,7 +7,6 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import session from 'express-session';                 // ✅ NEW
 
 import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
@@ -28,30 +27,10 @@ const app = express();
 app.set('trust proxy', 1);
 
 // ✅ Parse/sign cookies FIRST so OAuth cookies can be read
-app.use(
-  cookieParser(process.env.SESSION_SECRET, {
-    sameSite: 'none',
-    secure: true,
-    httpOnly: true,
-  })
-);
+// cookie-parser does not take sameSite/secure/httpOnly options; those belong to express-session (not used here)
+app.use(cookieParser(process.env.SESSION_SECRET));
 
-// ✅ Add a session so OAuth state/nonce survives the round-trip
-app.use(
-  session({
-    name: 'app_session',
-    secret: process.env.SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    proxy: true,
-    cookie: {
-      sameSite: 'none',
-      secure: true,
-      httpOnly: true,
-      // path limited to '/' is fine; Shopify hits /auth/*
-    },
-  })
-);
+// (Removed express-session) Not required for @shopify/shopify-api v11 OAuth; avoids cookie conflicts behind proxy.
 
 // ✅ Mount /auth BEFORE compression/CORS/body parser to avoid header issues
 app.use('/auth', authRoutes);
@@ -151,8 +130,25 @@ app.get('/diag', (req, res) => {
     hasApiSecret: !!process.env.SHOPIFY_API_SECRET,
     hasSessionSecret: !!process.env.SESSION_SECRET,
     hostEnv: process.env.HOST,
-    hostNameComputed: (process.env.HOST || '').replace(/^https?:\/\//, '').replace(/\/$/, ''),
+    hostNameEnv: process.env.HOST_NAME,
+    hostNameComputed: ((process.env.HOST_NAME || process.env.HOST || '')).replace(/^https?:\/\//, '').replace(/\/$/, ''),
     scopesRaw: process.env.SCOPES,
+  });
+});
+
+app.get('/diag/cookies', (req, res) => {
+  res.json({
+    cookies: req.cookies || {},
+    signedCookies: req.signedCookies || {},
+  });
+});
+
+app.get('/diag/headers', (req, res) => {
+  res.json({
+    headers: req.headers,
+    protocol: req.protocol,
+    secureFlag: req.secure,
+    ip: req.ip,
   });
 });
 
