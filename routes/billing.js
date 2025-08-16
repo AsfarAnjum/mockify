@@ -84,7 +84,7 @@ router.use('/ensure', async (req, res, next) => {
 router.get('/ensure', async (req, res) => {
   const shop = res.locals.shopify?.tokenPayload?.dest?.replace(/^https:\/\//, '');
   if (!shop) return res.status(400).json({ error: 'Missing shop' });
-
+  console.log(shop)
   try {
     const token = await getAccessToken(shop);
 
@@ -126,6 +126,7 @@ router.get('/ensure', async (req, res) => {
     return res.json({ active: false, confirmationUrl });
 
   } catch (e) {
+    console.log(e)
     const status = e?.status || e?.response?.status || e?.response?.code || e?.statusCode || e?.code;
     const msg = (e?.message || '').toLowerCase();
 
