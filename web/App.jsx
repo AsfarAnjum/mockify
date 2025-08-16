@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import ProductPicker from './components/ProductPicker.jsx';
 import UploadAndAttach from './components/UploadAndAttach.jsx';
-import { apiFetch } from './main.jsx'; // ✅ token-aware fetch
+import { apiFetch } from './main.jsx'; // token-aware fetch
 
 function getShopFromUrl() {
   const url = new URL(window.location.href);
@@ -21,10 +21,13 @@ function getHostFromUrl() {
   return url.searchParams.get('host') || '';
 }
 
-function topLevelReauth(shop, fallback) {
-  const target = `/auth/exit-iframe?shop=${encodeURIComponent(shop || '')}`;
-  const url = fallback || target;
+function navigateTop(url) {
   (window.top || window).location.assign(url);
+}
+
+function topLevelReauth(shop) {
+  // Uses your server route to exit iframe + start OAuth
+  navigateTop(`/auth/exit-iframe?shop=${encodeURIComponent(shop || '')}`);
 }
 
 function toUnifiedAdminUrl(confirmationUrl, shopDomain) {
@@ -37,22 +40,12 @@ function toUnifiedAdminUrl(confirmationUrl, shopDomain) {
     : confirmationUrl;
 }
 
-async function parseJsonSafe(res) {
-  const ct = (res.headers.get('content-type') || '').toLowerCase();
-  if (ct.includes('application/json')) {
-    return res.json();
-  }
-  const text = await res.text();
-  // If server returned HTML (e.g., SPA index), surface a short, readable error
-  const looksHtml = /^\s*<!doctype html>|<html/i.test(text || '');
-  if (looksHtml) {
-    throw new Error('Unexpected HTML from server (are you navigating instead of fetch?)');
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(text?.slice(0, 200) || 'Unexpected non‑JSON response');
-  }
+function installUrl(shop, host) {
+  const qs = new URLSearchParams({
+    ...(shop ? { shop } : {}),
+    ...(host ? { host } : {}),
+  }).toString();
+  return `/auth/install${qs ? `?${qs}` : ''}`;
 }
 
 export default function App() {
@@ -64,29 +57,31 @@ export default function App() {
   const ensureBilling = useCallback(async () => {
     setBilling((b) => ({ ...b, loading: true, error: null }));
     try {
-      // Server derives shop from JWT; no need to pass ?shop=...
-      const r = await apiFetch('/billing/ensure', { method: 'GET' });
+      // Server derives shop from JWT; no need to pass ?shop
+      const res = await apiFetch('/billing/ensure', { method: 'GET' });
 
-      // 401 → server tells us to reauth with a JSON body
-      if (r.status === 401) {
-        const data = await parseJsonSafe(r).catch(() => ({}));
+      // Explicit unauthorized → try JSON for a redirect hint; else reauth
+      if (res.status === 401) {
+        let data = {};
+        try { data = await res.json(); } catch {}
         if (data?.redirect) {
-          (window.top || window).location.assign(data.redirect);
+          navigateTop(data.redirect);
           return;
         }
-        // Fallback: force top-level reauth using our computed shop
-        if (shop) {
-          topLevelReauth(shop);
-          return;
-        }
-        throw new Error('Reauthentication required');
+        topLevelReauth(shop);
+        return;
       }
 
-      const data = await parseJsonSafe(r);
+      // Normal success path; backend now always returns JSON
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('application/json')) {
+        throw new Error('Expected JSON from /billing/ensure');
+      }
+      const data = await res.json();
 
-      if (data?.confirmationUrl) {
+      if (!data?.active && data?.confirmationUrl) {
         const target = toUnifiedAdminUrl(data.confirmationUrl, shop);
-        (window.top || window).location.assign(target);
+        navigateTop(target);
         return;
       }
 
@@ -94,14 +89,14 @@ export default function App() {
     } catch (e) {
       setBilling({ loading: false, active: false, error: e?.message || 'Failed to fetch' });
     }
-  }, [shop]);
+  }, [shop, host]);
 
   useEffect(() => {
     if (!shop) {
       setBilling({ loading: false, active: false, error: 'No shop detected' });
       return;
     }
-    // If embedded and host is missing (some Admin entry points), fix by top-level hop
+    // If embedded and host is missing (some Admin entry points), force top-level hop
     const embedded = window.top !== window.self;
     if (embedded && !host) {
       topLevelReauth(shop);
@@ -126,10 +121,15 @@ export default function App() {
         <div style={{ border: '1px solid #ef4444', background: '#fee2e2', padding: 12, borderRadius: 8, marginBottom: 16 }}>
           <strong>Billing error:</strong> {String(billing.error)}
           <div style={{ marginTop: 8 }}>
-            <button onClick={() => topLevelReauth(shop)} style={{ padding: '6px 12px', marginRight: 8, cursor: 'pointer' }}>
+            <button
+              onClick={() => topLevelReauth(shop)}
+              style={{ padding: '6px 12px', marginRight: 8, cursor: 'pointer' }}
+            >
               Reauthenticate
             </button>
-            <button onClick={ensureBilling} style={{ padding: '6px 12px', cursor: 'pointer' }}>Try again</button>
+            <button onClick={ensureBilling} style={{ padding: '6px 12px', cursor: 'pointer' }}>
+              Try again
+            </button>
           </div>
         </div>
       )}
