@@ -102,11 +102,11 @@ app.get('/', async (req, res) => {
   if (!shop) return sendIndex(res);
 
   const hasToken = await shopHasToken(shop);
-  if (!hasToken) {
+/*  if (!hasToken) {
     const qs = new URLSearchParams({ shop, host: host || '' }).toString();
     return res.redirect(`/auth/exit-iframe?${qs}`);
   }
-
+*/
   return sendIndex(res);
 });
 

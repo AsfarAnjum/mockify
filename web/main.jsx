@@ -9,8 +9,17 @@ import { getSessionToken } from "@shopify/app-bridge-utils";
  *  ------------------------------- */
 const params = new URLSearchParams(window.location.search);
 const host = params.get("host") || "";
+if (!host) {
+  console.warn("[App Bridge] Missing ?host param. If loading outside Admin, ensure you redirect via /auth/install and include host.");
+}
 // server.js injects this into index.html by replacing {{apiKey}}
-const apiKey = window.__APP_BRIDGE_API_KEY__ || "";
+const apiKey =
+  window.__APP_BRIDGE_API_KEY__ ||
+  import.meta?.env?.VITE_SHOPIFY_API_KEY ||
+  "";
+if (!apiKey) {
+  console.error("[App Bridge] Missing API key. Ensure server injects __APP_BRIDGE_API_KEY__ or set VITE_SHOPIFY_API_KEY.");
+}
 
 // Create the App Bridge instance and make it globally available
 export const appBridge = createApp({
@@ -46,7 +55,7 @@ export async function apiFetch(url, options = {}) {
     return fetch(url, {
       ...options,
       headers,
-      credentials: "include",
+      credentials: "omit",
     });
   } catch (err) {
     console.error("Error getting session token:", err);
