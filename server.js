@@ -12,7 +12,6 @@ import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
 import billingRoutes from './routes/billing.js';
 import complianceRoutes from './routes/compliance.js';
-import { getDB } from './db.js';
 
 import { shopify } from './shopify.js';
 
@@ -57,10 +56,14 @@ app.use('/api', apiRoutes);
 
 // Function to check if shop has access token
 async function shopHasToken(shop) {
-  if (!shop) return false;
+  if (!shop || !/\.myshopify\.com$/i.test(shop)) {
+    console.error('shopHasToken error', 'Received invalid shop argument');
+    return false;
+  }
   try {
-    const appSesstion = shopify.session.customAppSession()
-    return !!appSesstion?.accessToken;
+    const offlineId = shopify.session.getOfflineId(shop);
+    const s = await shopify.config.sessionStorage.loadSession(offlineId);
+    return !!s?.accessToken;
   } catch (e) {
     console.error('shopHasToken error', e?.message || e);
     return false;
@@ -102,29 +105,13 @@ app.get('/', async (req, res) => {
   if (!shop) return sendIndex(res);
 
   const hasToken = await shopHasToken(shop);
-/*  if (!hasToken) {
+  if (!hasToken) {
     const qs = new URLSearchParams({ shop, host: host || '' }).toString();
     return res.redirect(`/auth/exit-iframe?${qs}`);
   }
-*/
   return sendIndex(res);
 });
 
-// Grant route to render login.html with variables
-app.get('/app/grant', (req, res) => {
-  const shop = req.query.shop || '';
-  const host = req.query.host || '';
-  const apiKey = process.env.SHOPIFY_API_KEY || '';
-
-  const loginHtml = fs
-    .readFileSync(path.join(__dirname, 'web', 'login.html'), 'utf-8')
-    .replace('{{shop}}', shop)
-    .replace('{{host}}', host)
-    .replace('{{apiKey}}', apiKey);
-
-  res.setHeader('Content-Type', 'text/html');
-  return res.send(loginHtml);
-});
 
 // 🔎 Diagnostics
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
