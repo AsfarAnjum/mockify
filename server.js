@@ -100,7 +100,7 @@ app.get('/', async (req, res) => {
   const hasToken = await shopHasToken(shop);
   if (!hasToken) {
     const qs = new URLSearchParams({ shop, host: host || '' }).toString();
-    return res.redirect(`/auth/install?${qs}`);
+    return res.redirect(`/auth/exit-iframe?${qs}`);
   }
 
   return sendIndex(res);
