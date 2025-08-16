@@ -16,6 +16,17 @@ function getShopFromUrl() {
   return shop || '';
 }
 
+function getHostFromUrl() {
+  const url = new URL(window.location.href);
+  return url.searchParams.get('host') || '';
+}
+
+function topLevelReauth(shop, fallback) {
+  const target = `/auth/exit-iframe?shop=${encodeURIComponent(shop || '')}`;
+  const url = fallback || target;
+  (window.top || window).location.assign(url);
+}
+
 function toUnifiedAdminUrl(confirmationUrl, shopDomain) {
   if (!confirmationUrl || !shopDomain) return confirmationUrl;
   const store = shopDomain.replace('.myshopify.com', '');
@@ -27,21 +38,26 @@ function toUnifiedAdminUrl(confirmationUrl, shopDomain) {
 }
 
 async function parseJsonSafe(res) {
-  const ct = res.headers.get('content-type') || '';
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
   if (ct.includes('application/json')) {
     return res.json();
   }
   const text = await res.text();
+  // If server returned HTML (e.g., SPA index), surface a short, readable error
+  const looksHtml = /^\s*<!doctype html>|<html/i.test(text || '');
+  if (looksHtml) {
+    throw new Error('Unexpected HTML from server (are you navigating instead of fetch?)');
+  }
   try {
     return JSON.parse(text);
   } catch {
-    // surface a friendly error for HTML/plain responses
     throw new Error(text?.slice(0, 200) || 'Unexpected non‑JSON response');
   }
 }
 
 export default function App() {
   const shop = useMemo(getShopFromUrl, []);
+  const host = useMemo(getHostFromUrl, []);
   const [product, setProduct] = useState(null);
   const [billing, setBilling] = useState({ loading: true, active: false, error: null });
 
@@ -55,7 +71,12 @@ export default function App() {
       if (r.status === 401) {
         const data = await parseJsonSafe(r).catch(() => ({}));
         if (data?.redirect) {
-          (window.top || window).location.href = data.redirect;
+          (window.top || window).location.assign(data.redirect);
+          return;
+        }
+        // Fallback: force top-level reauth using our computed shop
+        if (shop) {
+          topLevelReauth(shop);
           return;
         }
         throw new Error('Reauthentication required');
@@ -80,8 +101,14 @@ export default function App() {
       setBilling({ loading: false, active: false, error: 'No shop detected' });
       return;
     }
+    // If embedded and host is missing (some Admin entry points), fix by top-level hop
+    const embedded = window.top !== window.self;
+    if (embedded && !host) {
+      topLevelReauth(shop);
+      return;
+    }
     ensureBilling();
-  }, [shop, ensureBilling]);
+  }, [shop, host, ensureBilling]);
 
   return (
     <div style={{ maxWidth: 960, margin: '40px auto', fontFamily: 'system-ui, -apple-system' }}>
@@ -99,6 +126,9 @@ export default function App() {
         <div style={{ border: '1px solid #ef4444', background: '#fee2e2', padding: 12, borderRadius: 8, marginBottom: 16 }}>
           <strong>Billing error:</strong> {String(billing.error)}
           <div style={{ marginTop: 8 }}>
+            <button onClick={() => topLevelReauth(shop)} style={{ padding: '6px 12px', marginRight: 8, cursor: 'pointer' }}>
+              Reauthenticate
+            </button>
             <button onClick={ensureBilling} style={{ padding: '6px 12px', cursor: 'pointer' }}>Try again</button>
           </div>
         </div>
