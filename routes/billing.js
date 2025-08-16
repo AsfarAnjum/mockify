@@ -1,156 +1,189 @@
-import { jwtDecode } from 'jwt-decode';
 import express from 'express';
-import { withAuth } from '../utils/auth-guard.js';
-import { getDB, clearShopSessions } from '../db.js';
 import { shopify } from '../shopify.js';
+import { clearShopSessions } from '../db.js';
 
 const router = express.Router();
 
-async function getAccessToken(shop) {
-  const db = await getDB();
-  const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
-  if (!row || !row.access_token) throw new Error('Shop not installed or token missing');
-  return row.access_token;
+/** ---------- Helpers ---------- **/
+
+// Verify the App Bridge session token coming from the frontend and extract the shop
+async function getShopFromAuthHeader(req) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token) throw new Error('Missing session token');
+
+  const payload = await shopify.session.decodeSessionToken(token); // verifies signature & exp
+  // payload.dest looks like "https://<shop>.myshopify.com"
+  const shop = (payload?.dest || '').replace(/^https?:\/\//, '');
+  if (!shop) throw new Error('Unable to extract shop from token');
+  return shop;
 }
 
-async function gql(shop, token, query, variables = {}) {
-  const res = await fetch(`https://${shop}/admin/api/2024-07/graphql.json`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': token,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+// Load the OFFLINE session/token stored by Shopify during OAuth
+async function loadOfflineSession(shop) {
+  const offlineId = shopify.session.getOfflineId(shop);
+  const session = await shopify.sessionStorage.loadSession(offlineId);
+  if (!session?.accessToken) throw new Error('No offline session/access token stored');
+  return session;
+}
 
-  const text = await res.text();
-  let json = {};
-  try { json = text ? JSON.parse(text) : {}; } catch {}
+// Run a GraphQL Admin query using the Shopify client (server-side only)
+async function adminGraphQL(session, query, variables = {}) {
+  const client = new shopify.clients.Graphql({ session });
+  const resp = await client.query({ data: { query, variables } });
 
-  if (!res.ok) {
-    const msg = json?.errors?.[0]?.message || json?.error || res.statusText || 'GraphQL HTTP error';
-    const err = new Error(msg);
-    err.status = res.status;
+  // The library throws for non-200s; still check for GraphQL errors array
+  const errors = resp?.body?.errors || resp?.body?.data?.userErrors;
+  if (Array.isArray(errors) && errors.length) {
+    const msg = errors.map(e => e.message || e).join('; ');
+    const err = new Error(msg || 'GraphQL error');
+    err.status = 400;
     throw err;
   }
-  if (json?.errors?.length) {
-    const err = new Error(json.errors.map(e => e.message).join('; '));
-    err.status = res.status;
-    throw err;
-  }
-  return json.data;
+
+  return resp?.body?.data;
 }
 
 function envBilling() {
-  const host = (process.env.HOST || '').replace(/\/$/, '');
+  // Prefer explicit APP_URL or HOST_NAME; fallback to HOST
+  const rawHost =
+    process.env.APP_URL ||
+    process.env.HOST_NAME ||
+    process.env.HOST ||
+    '';
+
+  const base =
+    rawHost
+      ? rawHost.replace(/\/$/, '')
+      : '';
+
   return {
     name: process.env.BILLING_NAME || 'Mockup Auto-Embedder Pro',
     price: parseFloat(process.env.BILLING_PRICE || '4.99'),
     interval: process.env.BILLING_INTERVAL || 'EVERY_30_DAYS',
     trialDays: parseInt(process.env.BILLING_TRIAL_DAYS || '7', 10),
     test: String(process.env.BILLING_TEST || 'true') === 'true',
-    returnUrlBase: host + (process.env.BILLING_RETURN_PATH || '/billing/confirm'),
+    returnUrlBase: base + (process.env.BILLING_RETURN_PATH || '/billing/confirm'),
   };
 }
 
 async function handleUnauthorized(shop) {
   try { await clearShopSessions(shop); } catch {}
-  try {
-    const db = await getDB();
-    await db.run('UPDATE shops SET access_token = NULL WHERE shop = ?', [shop]);
-  } catch {}
+  try { await shopify.sessionStorage.deleteSessions(shop); } catch {}
 }
 
-/**
- * Protect this route with validateAuthenticatedSession
- * This ensures the shop is extracted from the embedded app session
- */
-// middleware to decode JWT manually (compatible with v11)
-router.use('/ensure', async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.replace(/^Bearer /, '').trim();
-    if (!token) throw new Error('Missing token');
+/** ---------- Routes ---------- **/
 
-    const payload = jwtDecode(token);
-    res.locals.shopify = { tokenPayload: payload };
-    next();
-  } catch (error) {
-    console.error('JWT decode failed:', error.message);
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-});
-
+// Validate billing / prompt if missing
 router.get('/ensure', async (req, res) => {
-  const shop = res.locals.shopify?.tokenPayload?.dest?.replace(/^https:\/\//, '');
-  if (!shop) return res.status(400).json({ error: 'Missing shop' });
-  console.log(shop)
+  let shop = '';
   try {
-    const token = await getAccessToken(shop);
+    // 1) Identify the shop from the App Bridge session token (Authorization: Bearer <jwt>)
+    shop = await getShopFromAuthHeader(req);
 
-    const checkQ = `query { appInstallation { activeSubscriptions { id name status } } }`;
-    const check = await gql(shop, token, checkQ);
-    const list = check?.appInstallation?.activeSubscriptions || [];
-    const active = list.some(s => s.status === 'ACTIVE' || s.status === 'ACCEPTED');
+    // 2) Use OFFLINE session to call Admin
+    const offlineSession = await loadOfflineSession(shop);
+
+    // 3) Check current subscriptions
+    const checkQ = /* GraphQL */ `
+      query AppSubs {
+        appInstallation {
+          activeSubscriptions {
+            id
+            name
+            status
+          }
+        }
+      }`;
+    const data = await adminGraphQL(offlineSession, checkQ);
+    const list = data?.appInstallation?.activeSubscriptions || [];
+    const active = list.some(s => s?.status === 'ACTIVE' || s?.status === 'ACCEPTED');
     if (active) return res.json({ active: true });
 
+    // 4) Not active → create a subscription and return confirmationUrl
     const cfg = envBilling();
     const returnUrl = `${cfg.returnUrlBase}?shop=${encodeURIComponent(shop)}`;
-    const m = `
-      mutation appSubscriptionCreate(
-        $name: String!, $returnUrl: URL!, $test: Boolean!,
-        $trialDays: Int, $lineItems: [AppSubscriptionLineItemInput!]!
-      ) {
+
+    const createM = /* GraphQL */ `
+      mutation CreateSub($name: String!, $returnUrl: URL!, $test: Boolean!, $trialDays: Int, $lineItems: [AppSubscriptionLineItemInput!]!) {
         appSubscriptionCreate(
-          name: $name, returnUrl: $returnUrl, test: $test, trialDays: $trialDays, lineItems: $lineItems
+          name: $name
+          returnUrl: $returnUrl
+          test: $test
+          trialDays: $trialDays
+          lineItems: $lineItems
         ) {
           userErrors { field message }
           confirmationUrl
           appSubscription { id status }
         }
       }`;
+
     const vars = {
       name: cfg.name,
       returnUrl,
       test: cfg.test,
       trialDays: cfg.trialDays,
-      lineItems: [{
-        plan: { appRecurringPricingDetails: { price: { amount: cfg.price, currencyCode: 'USD' }, interval: cfg.interval } }
-      }],
+      lineItems: [
+        {
+          plan: {
+            appRecurringPricingDetails: {
+              price: { amount: cfg.price, currencyCode: 'USD' },
+              interval: cfg.interval, // 'EVERY_30_DAYS' or 'ANNUAL'
+            },
+          },
+        },
+      ],
     };
-    const resp = await gql(shop, token, m, vars);
-    const err = resp?.appSubscriptionCreate?.userErrors?.[0]?.message;
-    if (err) throw new Error(err);
 
-    const confirmationUrl = resp?.appSubscriptionCreate?.confirmationUrl;
+    const created = await adminGraphQL(offlineSession, createM, vars);
+    const uerr = created?.appSubscriptionCreate?.userErrors?.[0]?.message;
+    if (uerr) {
+      const err = new Error(uerr);
+      err.status = 400;
+      throw err;
+    }
+
+    const confirmationUrl = created?.appSubscriptionCreate?.confirmationUrl;
     return res.json({ active: false, confirmationUrl });
-
   } catch (e) {
-    console.log(e)
-    const status = e?.status || e?.response?.status || e?.response?.code || e?.statusCode || e?.code;
+    const status =
+      e?.status ||
+      e?.response?.status ||
+      e?.response?.code ||
+      e?.statusCode ||
+      undefined;
+
     const msg = (e?.message || '').toLowerCase();
 
-    if ((status === 401 || status === 403) ||
-        msg.includes('invalid api key') ||
-        (msg.includes('access token') && msg.includes('invalid')) ||
-        msg.includes('not authorized')) {
-      await handleUnauthorized(shop);
-      return res.redirect(`/auth/install?shop=${encodeURIComponent(shop)}`);
+    // Token/authorization issues → clear sessions and restart OAuth at TOP level
+    if (
+      status === 401 || status === 403 ||
+      msg.includes('invalid api key') ||
+      (msg.includes('access token') && msg.includes('invalid')) ||
+      msg.includes('not authorized') ||
+      msg.includes('no offline session') ||
+      msg.includes('missing session')
+    ) {
+      if (shop) await handleUnauthorized(shop);
+      const url = `/auth/exit-iframe?shop=${encodeURIComponent(shop || req.query.shop || '')}`;
+      return res.redirect(302, url);
     }
 
     console.error('[/billing/ensure] error:', e);
-    return res.status(500).json({ error: e.message || 'Billing failed' });
+    return res.status(500).json({ error: e?.message || 'Billing failed' });
   }
 });
 
+// After merchant confirms billing, bounce back into the embedded app
 router.get('/confirm', async (req, res) => {
   try {
-    const { shop } = req.query;
+    const shop = (req.query.shop || '').toString();
     if (!shop) return res.status(400).send('Missing shop');
     const host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
-    res.redirect(`/?shop=${shop}&host=${host}`);
+    return res.redirect(302, `/?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`);
   } catch (e) {
-    res.status(500).send(e.message);
+    return res.status(500).send(e?.message || 'Confirm error');
   }
 });
 
