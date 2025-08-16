@@ -42,7 +42,7 @@ async function gql(shop, token, query, variables = {}) {
 }
 
 function envBilling() {
-  const host = process.env.HOST?.replace(/\/$/, '');
+  const host = (process.env.HOST || '').replace(/\/$/, '');
   return {
     name: process.env.BILLING_NAME || 'Mockup Auto-Embedder Pro',
     price: parseFloat(process.env.BILLING_PRICE || '4.99'),
@@ -54,7 +54,7 @@ function envBilling() {
 }
 
 async function handleUnauthorized(shop) {
-  try { await clearShopSessions?.(shop); } catch {}
+  try { await clearShopSessions(shop); } catch {}
   try {
     const db = await getDB();
     await db.run('UPDATE shops SET access_token = NULL WHERE shop = ?', [shop]);

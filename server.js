@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import session from 'express-session';                 // ✅ NEW
 
 import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
@@ -26,7 +27,7 @@ const app = express();
 // ✅ Required so cookies from Shopify OAuth survive Render's proxy
 app.set('trust proxy', 1);
 
-// ✅ Parse/sign cookies FIRST so OAuth nonce/state cookie can be set
+// ✅ Parse/sign cookies FIRST so OAuth cookies can be read
 app.use(
   cookieParser(process.env.SESSION_SECRET, {
     sameSite: 'none',
@@ -35,7 +36,24 @@ app.use(
   })
 );
 
-// ✅ Mount /auth BEFORE compression/CORS/body parsers to avoid header issues
+// ✅ Add a session so OAuth state/nonce survives the round-trip
+app.use(
+  session({
+    name: 'app_session',
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    proxy: true,
+    cookie: {
+      sameSite: 'none',
+      secure: true,
+      httpOnly: true,
+      // path limited to '/' is fine; Shopify hits /auth/*
+    },
+  })
+);
+
+// ✅ Mount /auth BEFORE compression/CORS/body parser to avoid header issues
 app.use('/auth', authRoutes);
 
 // Allow Shopify admin embedding
@@ -48,7 +66,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Remaining middlewares
 app.use(cors({ credentials: true, origin: true }));
 app.use(compression());
 app.use(bodyParser.json());
@@ -88,7 +105,6 @@ app.get('/', async (req, res) => {
   let shop = (req.query?.shop || '').toString();
   let host = (req.query?.host || '').toString();
 
-  // If embedded and only host is present, decode to get the shop
   if (!shop && host) {
     try {
       const decoded = Buffer.from(host, 'base64').toString('utf-8'); // "<shop>.myshopify.com/admin"
@@ -96,7 +112,6 @@ app.get('/', async (req, res) => {
     } catch {}
   }
 
-  // If we have a shop but not a host, synthesize one
   if (shop && !host) {
     host = Buffer.from(`${shop}/admin`, 'utf-8').toString('base64');
   }

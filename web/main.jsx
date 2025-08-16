@@ -1,18 +1,31 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
+import createApp from "@shopify/app-bridge";
 import { getSessionToken } from "@shopify/app-bridge-utils";
+
+/** -------------------------------
+ *  App Bridge setup (v11 frontend)
+ *  ------------------------------- */
+const params = new URLSearchParams(window.location.search);
+const host = params.get("host") || "";
+// server.js injects this into index.html by replacing {{apiKey}}
+const apiKey = window.__APP_BRIDGE_API_KEY__ || "";
+
+// Create the App Bridge instance and make it globally available
+export const appBridge = createApp({
+  apiKey,
+  host,
+  forceRedirect: true,
+});
+window.__APP_BRIDGE_APP__ = appBridge;
 
 /**
  * Helper to fetch with Shopify session token (JWT)
  */
 export async function apiFetch(url, options = {}) {
-  // Wait until App Bridge is available
-  const app = window.__APP_BRIDGE_APP__;
-  if (!app) return fetch(url, options);
-
   try {
-    const token = await getSessionToken(app);
+    const token = await getSessionToken(appBridge);
 
     const headers = {
       ...(options.headers || {}),
@@ -20,6 +33,7 @@ export async function apiFetch(url, options = {}) {
       Accept: "application/json",
     };
 
+    // If sending JSON, stringify it and set header
     if (
       options.body &&
       typeof options.body === "object" &&
@@ -36,11 +50,12 @@ export async function apiFetch(url, options = {}) {
     });
   } catch (err) {
     console.error("Error getting session token:", err);
+    // Fallback: plain fetch (may return HTML/redirect if not authorized)
     return fetch(url, options);
   }
 }
 
-// Make globally available if needed
+// Optional: make globally available
 window.apiFetch = apiFetch;
 
 const el = document.getElementById("root");

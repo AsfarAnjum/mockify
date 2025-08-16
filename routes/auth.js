@@ -3,13 +3,12 @@ import { shopify } from "../shopify.js";
 
 const router = express.Router();
 
-// STEP 1: Begin OAuth (v11) — shopify.auth.begin() performs the redirect itself
+// STEP 1: Begin OAuth — do NOT require host
 router.get("/install", async (req, res) => {
   const shop = (req.query.shop || "").toString();
-  const host = (req.query.host || "").toString();
-
-  if (!shop || !host) {
-    if (!res.headersSent) return res.status(400).send("Missing shop or host param");
+  // host is optional for begin()
+  if (!shop) {
+    if (!res.headersSent) return res.status(400).send("Missing shop param");
     return;
   }
 
@@ -21,12 +20,14 @@ router.get("/install", async (req, res) => {
       rawRequest: req,
       rawResponse: res,
     });
-    // NOTE: Do not call res.redirect here — begin() already handled it.
+    // NOTE: begin() performs the redirect itself.
   } catch (err) {
     console.error("[AUTH/INSTALL] error:", err);
-    const msg = err?.message || "unknown error";
     if (!res.headersSent) {
-      return res.status(500).send(`Failed to start OAuth: ${msg}`);
+      return res
+        .status(500)
+        .type("text/plain; charset=utf-8")
+        .send(`Failed to start OAuth: ${err?.message || "unknown error"}`);
     }
   }
 });
@@ -39,12 +40,18 @@ router.get("/callback", async (req, res) => {
       rawResponse: res,
     });
 
-    const host = (req.query.host || "").toString();
+    // Try to use provided host, otherwise synthesize one from shop
+    let host = (req.query.host || "").toString();
     const shop = session?.shop;
 
-    if (!shop || !host) {
-      if (!res.headersSent) return res.status(400).send("Missing shop or host on callback");
+    if (!shop) {
+      if (!res.headersSent) return res.status(400).send("Missing shop on callback");
       return;
+    }
+
+    if (!host) {
+      // synthesize a host param Shopify Admin understands
+      host = Buffer.from(`${shop}/admin`, "utf-8").toString("base64");
     }
 
     if (!res.headersSent) {
