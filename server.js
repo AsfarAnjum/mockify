@@ -58,9 +58,14 @@ app.use('/api', apiRoutes);
 // Function to check if shop has access token
 async function shopHasToken(shop) {
   if (!shop) return false;
-  const db = await getDB();
-  const row = await db.get('SELECT access_token FROM shops WHERE shop = ?', [shop]);
-  return !!row?.access_token;
+  try {
+    const offlineId = shopify.session.getOfflineId(shop);
+    const s = await shopify.sessionStorage.loadSession(offlineId);
+    return !!s?.accessToken;
+  } catch (e) {
+    console.error('shopHasToken error', e?.message || e);
+    return false;
+  }
 }
 
 // Static files
